@@ -22,9 +22,9 @@ class SearchPatternNode(Node):
         super().__init__('search_pattern_node')
 
         self.declare_parameter('pattern_type', 'expanding_square')
-        self.declare_parameter('leg_length_m', 0)
-        self.declare_parameter('leg_increment_m', 0)
-        self.declare_parameter('search_speed', 0)
+        self.declare_parameter('leg_length_m', 0.0)
+        self.declare_parameter('leg_increment_m', 0.0)
+        self.declare_parameter('search_speed', 0.0)
         self.declare_parameter('search_class', '')
         self.declare_parameter('timeout_sec', 120.0)
         self.declare_parameter('search_kp', 0.0)

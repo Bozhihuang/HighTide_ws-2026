@@ -13,6 +13,7 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
 from hightide_interfaces.msg import NavigationTier
 from hightide_interfaces.srv import SetNavigationTier
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 
 class NavTierManagerNode(Node):
@@ -29,6 +30,10 @@ class NavTierManagerNode(Node):
         self.vslam_thresh = self.get_parameter('vslam_confidence_threshold').value
         self.vio_thresh = self.get_parameter('vio_confidence_threshold').value
         self.stale_timeout = self.get_parameter('stale_timeout_sec').value
+        qos_profile = QoSProfile(
+        reliability=ReliabilityPolicy.BEST_EFFORT,
+        depth=10
+        )
 
         # State
         self.current_tier = NavigationTier.VIO  # Default
@@ -43,8 +48,11 @@ class NavTierManagerNode(Node):
             Odometry, '/zed/zed_node/odom',
             self._odom_callback, 10)
         self.imu_sub = self.create_subscription(
-            Imu, '/mavros/imu/data',
-            self._imu_callback, 10)
+        Imu,
+        '/mavros/imu/data',
+        self.imu_callback,
+        qos_profile=qos_profile # Forces python to handle the stream cleanly
+        )
 
         # Publisher
         self.tier_pub = self.create_publisher(
