@@ -78,8 +78,6 @@ def generate_launch_description():
             'camera_model': 'zedxm',
             'publish_tf': 'true',
             'depth_mode': 'NEURAL_LIGHT',
-            'pos_tracking_enabled': 'true',
-            'spatial_memory_enabled': 'true',
         }.items(),
         condition=UnlessCondition(sim),
     )
@@ -200,7 +198,7 @@ def generate_launch_description():
         rc_override,
         depth_controller,
         mode_manager,
-        detection_viz,
+        # detection_viz,
         nav_tier_manager,
         waypoint_navigator,
         vision_servo,

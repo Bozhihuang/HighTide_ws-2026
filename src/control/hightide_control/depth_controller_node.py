@@ -14,6 +14,7 @@ Publishes PWM value to /hightide/depth_pwm which rc_override_node picks up.
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64, Int32
+from mavros_msgs.msg import Altitude
 from hightide_interfaces.srv import SetDepth
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
@@ -32,6 +33,13 @@ class DepthControllerNode(Node):
         self.declare_parameter('publish_rate', 20.0)
         self.declare_parameter('depth_tolerance', 0.1)
         self.declare_parameter('integral_max', 100.0)
+        # Which MAVROS topic actually carries usable depth on YOUR rig. On ArduSub
+        # the standard is global_position/rel_alt (baro/pressure-derived), but if it
+        # reads zero/garbage underwater, switch to 'altitude' (needs the `altitude`
+        # plugin whitelisted in mavros.yaml). Swap live via params.yaml — no rebuild.
+        #   'rel_alt'  -> std_msgs/Float64      /mavros/global_position/rel_alt
+        #   'altitude' -> mavros_msgs/Altitude  /mavros/altitude   (uses .relative)
+        self.declare_parameter('depth_source', 'rel_alt')
 
         self.kp = self.get_parameter('kp').value
         self.ki = self.get_parameter('ki').value
@@ -40,6 +48,7 @@ class DepthControllerNode(Node):
         self.publish_rate = self.get_parameter('publish_rate').value
         self.depth_tolerance = self.get_parameter('depth_tolerance').value
         self.integral_max = self.get_parameter('integral_max').value
+        self.depth_source = self.get_parameter('depth_source').value
 
         # State
         self.target_depth = None  # None = no target, hold current
@@ -55,10 +64,17 @@ class DepthControllerNode(Node):
             depth=10
         )
 
-        # Subscribers
-        self.depth_sub = self.create_subscription(
-            Float64, '/mavros/global_position/rel_alt',
-            self._depth_callback, sensor_qos)
+        # Depth feedback — pick the source that actually works on this vehicle.
+        if self.depth_source == 'altitude':
+            self.depth_sub = self.create_subscription(
+                Altitude, '/mavros/altitude',
+                self._altitude_callback, sensor_qos)
+            self.get_logger().info('Depth source: /mavros/altitude (.relative)')
+        else:
+            self.depth_sub = self.create_subscription(
+                Float64, '/mavros/global_position/rel_alt',
+                self._depth_callback, sensor_qos)
+            self.get_logger().info('Depth source: /mavros/global_position/rel_alt')
 
         self.target_sub = self.create_subscription(
             Float64, '/hightide/target_depth',
@@ -85,6 +101,12 @@ class DepthControllerNode(Node):
         We convert to positive-down convention: depth_m = -rel_alt.
         """
         self.current_depth = -msg.data  # Convert to positive = deeper
+        self.depth_received = True
+
+    def _altitude_callback(self, msg: Altitude):
+        """Depth from mavros_msgs/Altitude. `relative` is relative to the arming
+        altitude (negative below surface for a sub), so depth_m = -relative."""
+        self.current_depth = -msg.relative  # Convert to positive = deeper
         self.depth_received = True
 
     def _target_depth_callback(self, msg: Float64):

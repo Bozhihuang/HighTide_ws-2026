@@ -17,9 +17,9 @@ rc_override_node:
 
 depth_controller_node:
   ros__parameters:
-    kp: 100.0
-    ki: 5.0
-    kd: 20.0
+    kp: 1.0
+    ki: 0.0
+    kd: 0.0
     max_output: 400
     depth_tolerance: 0.1          # meters
     integral_max: 100.0
@@ -55,15 +55,15 @@ nav_tier_manager_node:
 # ============== NAVIGATION ==============
 waypoint_navigator_node:
   ros__parameters:
-    surge_kp: 1.0
-    surge_ki: 0.05
-    surge_kd: 0.2
-    sway_kp: 1.2
-    sway_ki: 0.05
-    sway_kd: 0.3
-    yaw_kp: 2.0
-    yaw_ki: 0.1
-    yaw_kd: 0.5
+    surge_kp: 0.2
+    surge_ki: .0
+    surge_kd: 0.0
+    sway_kp: 0.2
+    sway_ki: 0.0
+    sway_kd: 0.0
+    yaw_kp: 0.45
+    yaw_ki: 0.0
+    yaw_kd: 0.2
     position_tolerance: 0.3      # meters
     yaw_tolerance: 0.1           # radians (~5.7°)
     max_speed: 0.6

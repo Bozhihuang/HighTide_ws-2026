@@ -1,7 +1,4 @@
-Here is the corrected version of search_pattern_node.py that includes the _det_callback() function from your original code, while keeping the ZED position (/mavros/zed/odom) and IMU heading (/mavros/imu/data) updates intact:
 
-Python
-#!/usr/bin/env python3
 """
 Search Pattern Node — Systematic visual search when no pingers available.
 

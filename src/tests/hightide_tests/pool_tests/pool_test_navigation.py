@@ -7,12 +7,15 @@ move exactly 1 meter forward (surge) or 1 meter right (sway) from its
 current position.
 """
 
+import math
+
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
 from std_srvs.srv import SetBool, Trigger
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
+from geometry_msgs.msg import PoseStamped
 from hightide_interfaces.action import NavigateToWaypoint
 from hightide_navigation import quaternion_to_yaw
 
@@ -73,12 +76,34 @@ class NavigationPoolTest(Node):
             return
             
         goal = NavigateToWaypoint.Goal()
+
+        # The action Goal is a geometry_msgs/PoseStamped target_pose (+ tolerances /
+        # timeout), NOT flat target_x/target_y fields. Build the pose explicitly.
+        target = PoseStamped()
+        target.header.frame_id = 'odom'
+        target.header.stamp = self.get_clock().now().to_msg()
+
         # Transform relative to global (simplified, assumes yaw=0 for basic pool test)
         # In a real scenario, use TF2 or calculate based on the explicit self.current_heading
-        goal.target_x = self.current_pose.position.x + relative_x
-        goal.target_y = self.current_pose.position.y + relative_y
-        
-        self.get_logger().info(f'Sending waypoint: X={goal.target_x:.2f}, Y={goal.target_y:.2f}')
+        target.pose.position.x = self.current_pose.position.x + relative_x
+        target.pose.position.y = self.current_pose.position.y + relative_y
+        target.pose.position.z = self.current_pose.position.z
+
+        # Hold the CURRENT heading. The navigator derives its goal yaw from this
+        # orientation; a default (all-zero) quaternion would command absolute yaw 0
+        # and spin the sub. Encode current_heading as a yaw-only quaternion.
+        half = (self.current_heading or 0.0) / 2.0
+        target.pose.orientation.z = math.sin(half)
+        target.pose.orientation.w = math.cos(half)
+
+        goal.target_pose = target
+        goal.position_tolerance = 0.2   # meters
+        goal.yaw_tolerance = 0.15       # radians (~8.6 deg)
+        goal.timeout_sec = 60.0         # abort if it can't reach the point in 60 s
+
+        self.get_logger().info(
+            f'Sending waypoint: X={target.pose.position.x:.2f}, '
+            f'Y={target.pose.position.y:.2f}')
         
         future = self.nav_client.send_goal_async(goal)
         rclpy.spin_until_future_complete(self, future)
