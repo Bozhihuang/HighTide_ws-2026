@@ -58,6 +58,17 @@ class DepthControllerNode(Node):
         self.integral = 0.0
         self.last_time = None
         self.current_depth = 0.0
+        self._diag_tick = 0        # throttles the "why am I holding 1500" log
+
+        # If gains never loaded (ran without --params-file / wrong node name), the PID
+        # output is 0 and pwm sticks at 1500 — indistinguishable from "no feedback"
+        # on the wire. Say so loudly at startup so it isn't mistaken for a sensor issue.
+        if self.kp == 0.0 and self.ki == 0.0 and self.kd == 0.0:
+            self.get_logger().error(
+                'ALL depth gains are 0 (kp=ki=kd=0) — output will stay 1500 no matter '
+                'what. params.yaml likely did not load. Check: '
+                'ros2 param get /depth_controller_node kp')
+
         sensor_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
@@ -130,12 +141,25 @@ class DepthControllerNode(Node):
         """PID control loop — compute throttle PWM from depth error."""
         now = self.get_clock().now()
         msg = Int32()
+        self._diag_tick += 1
+        diag = (self._diag_tick % 40 == 0)   # ~2 s at 20 Hz
 
-        # No target or no depth reading: output neutral (hold current depth)
+        # No target or no depth reading: output neutral (hold current depth).
+        # This is the #1 reason the PWM "never changes" — surface exactly which
+        # input is missing so it isn't mistaken for a dead controller.
         if self.target_depth is None or not self.depth_received:
             msg.data = 1500
             self.pwm_pub.publish(msg)
             self.last_time = now
+            if diag:
+                reasons = []
+                if self.target_depth is None:
+                    reasons.append('NO TARGET (publish /hightide/target_depth or call '
+                                   '/hightide/set_depth)')
+                if not self.depth_received:
+                    reasons.append(f"NO DEPTH FEEDBACK on source '{self.depth_source}' "
+                                   f"(check that topic is publishing)")
+                self.get_logger().warn(f'Holding 1500 — {"; ".join(reasons)}')
             return
 
         # Compute dt
@@ -158,6 +182,10 @@ class DepthControllerNode(Node):
             msg.data = 1500
             self.integral = 0.0
             self.pwm_pub.publish(msg)
+            if diag:
+                self.get_logger().info(
+                    f'Holding 1500 — AT TARGET (target={self.target_depth:.2f} '
+                    f'current={self.current_depth:.2f}, |err|<{self.depth_tolerance})')
             return
 
         # PID
@@ -181,6 +209,11 @@ class DepthControllerNode(Node):
 
         msg.data = pwm
         self.pwm_pub.publish(msg)
+
+        if diag:
+            self.get_logger().info(
+                f'ACTIVE: target={self.target_depth:.2f} current={self.current_depth:.2f} '
+                f'error={error:+.2f} output={output:+.1f} -> pwm={pwm}')
 
         self.get_logger().debug(
             f'Depth: target={self.target_depth:.2f} current={self.current_depth:.2f} '
