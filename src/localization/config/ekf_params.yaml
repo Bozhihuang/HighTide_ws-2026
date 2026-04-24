@@ -2,7 +2,7 @@
 # Fuses ZED VIO (X/Y/Z) with FOG heading (roll/pitch/yaw) from MAVROS
 ekf_filter_node:
   ros__parameters:
-    frequency: 50.0
+    frequency: 20.0
     two_d_mode: false
     publish_tf: true
     publish_acceleration: true

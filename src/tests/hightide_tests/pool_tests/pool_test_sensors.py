@@ -12,15 +12,18 @@ import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
-
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 class SensorsPoolTest(Node):
     def __init__(self):
         super().__init__('pool_test_sensors')
-        
-        self.create_subscription(Odometry, '/hightide/odometry/filtered', self._ekf_cb, 10)
-        self.create_subscription(Imu, '/mavros/imu/data', self._imu_cb, 10)
-        
+        sensor_qos = QoSProfile(
+        reliability=ReliabilityPolicy.BEST_EFFORT,
+        history=HistoryPolicy.KEEP_LAST,
+        depth=10
+        )
+        self.create_subscription(Odometry, '/odometry/filtered', self._ekf_cb, 10)
+        self.create_subscription(Imu, '/mavros/imu/data', self._imu_cb, sensor_qos)
         self.ekf_x = 0.0
         self.ekf_y = 0.0
         self.ekf_yaw = 0.0
@@ -31,6 +34,7 @@ class SensorsPoolTest(Node):
         self.get_logger().info('=== STARTING SENSORS POOL TEST ===')
         self.get_logger().info('Move the sub around the pool to verify tracking.')
         self.get_logger().info('Press Ctrl+C to exit.')
+        
 
     def _ekf_cb(self, msg):
         self.ekf_x = msg.pose.pose.position.x
