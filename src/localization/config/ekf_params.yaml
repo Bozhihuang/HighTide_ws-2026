@@ -2,7 +2,7 @@
 # Fuses ZED VIO (X/Y/Z) with FOG heading (roll/pitch/yaw) from MAVROS
 ekf_filter_node:
   ros__parameters:
-    frequency: 50.0
+    frequency: 20.0
     two_d_mode: false
     publish_tf: true
     publish_acceleration: true
@@ -60,3 +60,5 @@ ekf_filter_node:
       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.01,  0.0,   0.0,
       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.01,  0.0,
       0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.0,   0.015]
+    debug: true
+    debug_out_file: /home/user/HighTide_ws-2026/ekf_debug.txt
