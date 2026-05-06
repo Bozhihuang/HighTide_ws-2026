@@ -28,3 +28,5 @@ Thumbs.db
 
 # ROS2 bag files
 *.db3
+
+ekf_debug.txt
