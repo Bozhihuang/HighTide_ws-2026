@@ -17,9 +17,9 @@ ekf_filter_node:
     # Source for X Y position and velocities
     # ============================================================
     odom0: /zed/zed_node/odom
-    odom0_config: [true,  true,  false,     # x, y, z
+    odom0_config: [true,  true,  true,     # x, y, z
                    false, false, false,    # roll, pitch, yaw — NO ZED rotation
-                   true,  true,  false,     # vx, vy, vz
+                   true,  true,  true,     # vx, vy, vz
                    false, false, false,    # vroll, vpitch, vyaw
                    false, false, false]    # ax, ay, az
     odom0_differential: false
@@ -31,9 +31,9 @@ ekf_filter_node:
     # Source for Roll, Pitch, Yaw and angular velocities. Uses fog as primary yaw. Also uses barometer for z.
     # ============================================================
     imu0: /mavros/imu/data
-    imu0_config: [false, false, true,     # x, y, z
+    imu0_config: [false, false, false,     # x, y, z
                   true,  true,  true,      # roll, pitch, yaw — FOG heading
-                  false, false, true,     # vx, vy, vz
+                  false, false, false,     # vx, vy, vz
                   true,  true,  true,      # vroll, vpitch, vyaw
                   true,  true,  true]      # ax, ay, az
     imu0_qos: "best_effort"
