@@ -19,7 +19,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 from mavros_msgs.msg import OverrideRCIn
-from std_msgs.msg import Int32
+from std_msgs.msg import Int32  
 from hightide_interfaces.msg import ThrusterCommand
 
 
@@ -165,7 +165,6 @@ def main(args=None):
         node.rc_pub.publish(msg)
         node.get_logger().info('Shutdown — sent neutral RC override')
         node.destroy_node()
-        rclpy.shutdown()
 
 
 if __name__ == '__main__':

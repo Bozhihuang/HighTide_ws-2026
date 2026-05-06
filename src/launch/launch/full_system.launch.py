@@ -14,6 +14,10 @@ from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource, AnyLaunchDescriptionSource
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
+from launch.actions import RegisterEventHandler, EmitEvent
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
+from launch.actions import TimerAction
 import os
 
 
@@ -208,7 +212,18 @@ def generate_launch_description():
             }
         ],
     )
-
+    mission = TimerAction(
+        period=2.0,
+        actions=[mission]
+    )
+    shutdown_handler = RegisterEventHandler(
+        event_handler=OnProcessExit(
+            target_action=mission,  # pick a "top-level mission node"
+            on_exit=[
+                EmitEvent(event=Shutdown(reason='mission node exited'))
+            ]
+        )
+    )
     return LaunchDescription([
         sim_arg, depth_arg, timeout_arg, engine_arg, fcu_url_arg, run_mission_arg,
         # mavros_launch,
@@ -227,4 +242,5 @@ def generate_launch_description():
         search_pattern,
         actuator_driver,
         mission,
+        shutdown_handler,
     ])

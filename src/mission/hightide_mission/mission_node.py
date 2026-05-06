@@ -272,8 +272,6 @@ def main(args=None):
         node.cmd_pub.publish(cmd)
         node.get_logger().info('Mission node shutdown — motors stopped')
         node.destroy_node()
-        rclpy.shutdown()
-
 
 if __name__ == '__main__':
     main()
