@@ -198,7 +198,7 @@ def generate_launch_description():
     )
 
     # ============== MISSION ==============
-    mission = Node(
+    mission_node = Node(
         package='hightide_mission',
         executable='mission_node',
         name='mission_node',
@@ -212,13 +212,14 @@ def generate_launch_description():
             }
         ],
     )
-    mission = TimerAction(
-        period=2.0,
-        actions=[mission]
+
+    delayed_mission = TimerAction(
+        period=5.0,
+        actions=[mission_node]
     )
     shutdown_handler = RegisterEventHandler(
         event_handler=OnProcessExit(
-            target_action=mission,  # pick a "top-level mission node"
+            target_action=mission_node,
             on_exit=[
                 EmitEvent(event=Shutdown(reason='mission node exited'))
             ]
@@ -241,6 +242,6 @@ def generate_launch_description():
         yaw_controller,
         search_pattern,
         actuator_driver,
-        mission,
+        delayed_mission,
         shutdown_handler,
     ])

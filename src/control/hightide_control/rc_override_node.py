@@ -159,11 +159,6 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        # Send neutral on shutdown
-        msg = OverrideRCIn()
-        msg.channels = [1500] * NUM_CHANNELS
-        node.rc_pub.publish(msg)
-        node.get_logger().info('Shutdown — sent neutral RC override')
         node.destroy_node()
 
 
