@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>HighTide_tests</name>
+  <version>1.0.0</version>
+  <description>Unit and integration tests for all HighTide packages</description>
+  <maintainer email="team@HighTide.org">HighTide Team</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>mavros_msgs</depend>
+  <depend>HighTide_interfaces</depend>
+  <depend>HighTide_control</depend>
+  <depend>HighTide_perception</depend>
+  <depend>HighTide_localization</depend>
+  <depend>HighTide_navigation</depend>
+  <depend>HighTide_mission</depend>
+  <depend>HighTide_drivers</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+  <test_depend>launch_testing</test_depend>
+  <test_depend>launch_testing_ament_cmake</test_depend>
+  <test_depend>launch_testing_ros2</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

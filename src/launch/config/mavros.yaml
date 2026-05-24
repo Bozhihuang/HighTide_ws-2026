@@ -1,0 +1,45 @@
+# MAVROS ArduSub configuration
+# Used by the launch file for MAVROS node parameters
+
+mavros:
+  ros__parameters:
+    fcu_url: "/dev/ttyACM0:115200"
+    gcs_url: ""
+    target_system_id: 1
+    target_component_id: 1
+    system_id: 255          # MUST be 255 for ArduSub to accept GCS commands
+
+    # Plugin blacklist — disable unused plugins for performance
+    plugin_blacklist:
+      - safety_area
+      - image_pub
+      - vibration
+      - distance_sensor
+      - rangefinder
+      - wheel_odometry
+      - cam_imu_sync
+
+    # Plugin whitelist — ensure critical plugins are enabled
+    plugin_whitelist:
+      - rc_io
+      - command
+      - imu
+      - global_position
+      - local_position
+      - setpoint_position
+      - setpoint_velocity
+      - sys_status
+      - param
+
+    # RC channels configuration
+    rc:
+      override:
+        enabled: true         # Allow RC override
+        channels: 8           # Use first 8 channels
+
+    # IMU configuration (FOG heading comes through here)
+    imu:
+      frame_id: "imu_link"
+      linear_acceleration_stdev: 0.0003
+      angular_velocity_stdev: 0.0003
+      orientation_stdev: 0.001

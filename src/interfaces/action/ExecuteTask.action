@@ -1,0 +1,13 @@
+# Goal: Execute a specific competition task
+uint8 task_id
+string parameters               # JSON string for task-specific params
+---
+# Result
+bool success
+int32 points_scored
+string message
+---
+# Feedback
+string current_step
+float32 progress_pct
+string status_message

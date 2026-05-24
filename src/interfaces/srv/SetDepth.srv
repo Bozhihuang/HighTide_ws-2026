@@ -1,0 +1,5 @@
+# Set target depth in meters (positive = deeper)
+float32 target_depth_m
+---
+bool success
+string message

@@ -1,0 +1,30 @@
+# ROS2 Workspace Build Directories
+build/
+install/
+log/
+
+# Python Caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.egg-info/
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS Specific
+.DS_Store
+Thumbs.db
+
+# Large Model Files
+*.engine
+*.trt
+*.onnx
+*.pt
+
+# ROS2 bag files
+*.db3

@@ -1,0 +1,15 @@
+# Goal: Navigate to a target pose
+geometry_msgs/PoseStamped target_pose
+float32 position_tolerance      # meters
+float32 yaw_tolerance           # radians
+float32 timeout_sec
+---
+# Result
+bool success
+float32 final_distance_m
+string message
+---
+# Feedback
+float32 distance_remaining_m
+float32 yaw_error_rad
+float32 elapsed_sec

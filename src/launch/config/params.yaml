@@ -1,0 +1,105 @@
+# Full system parameter overrides
+# Copy and modify for your specific vehicle
+
+# ============== MISSION ==============
+mission:
+  mission_depth_m: 1.0           # Competition pool depth target
+  mission_timeout_sec: 900.0     # 15 minute mission window
+  tick_rate: 10.0                # Behavior tree tick rate (Hz)
+
+# ============== CONTROL ==============
+rc_override:
+  publish_rate: 20.0
+  max_pwm: 1900
+  min_pwm: 1100
+  neutral_pwm: 1500
+  deadzone: 0.05
+  timeout_sec: 0.5              # Safety timeout — neutral after 500ms silence
+
+depth_controller:
+  kp: 100.0
+  ki: 5.0
+  kd: 20.0
+  max_output: 400
+  depth_tolerance: 0.1          # meters
+  integral_max: 100.0
+
+mode_manager:
+  barrel_roll_duration_sec: 3.0
+  barrel_roll_pwm: 1900
+
+# ============== PERCEPTION ==============
+yolo_detector:
+  engine_path: '/home/zedbox/models/HighTide_yolov8n.engine'
+  confidence_threshold: 0.5
+  nms_threshold: 0.45
+  input_width: 640
+  input_height: 640
+  publish_viz: true
+
+target_tracker:
+  max_tracking_age: 1.0         # seconds before track expires
+  iou_threshold: 0.3
+  depth_sample_radius: 5        # pixels
+
+# ============== LOCALIZATION ==============
+nav_tier_manager:
+  vslam_confidence_threshold: 0.80
+  vio_confidence_threshold: 0.30
+  stale_timeout_sec: 1.0
+
+# ============== NAVIGATION ==============
+waypoint_navigator:
+  surge_kp: 1.0
+  surge_ki: 0.05
+  surge_kd: 0.2
+  sway_kp: 1.2
+  sway_ki: 0.05
+  sway_kd: 0.3
+  yaw_kp: 2.0
+  yaw_ki: 0.1
+  yaw_kd: 0.5
+  position_tolerance: 0.3      # meters
+  yaw_tolerance: 0.1           # radians (~5.7°)
+  max_speed: 0.6
+
+vision_servo:
+  lateral_kp: 1.5
+  lateral_ki: 0.05
+  lateral_kd: 0.3
+  vertical_kp: 1.0
+  vertical_ki: 0.05
+  vertical_kd: 0.2
+  range_kp: 0.8
+  range_ki: 0.02
+  range_kd: 0.15
+  approach_distance_m: 1.0
+
+yaw_controller:
+  yaw_kp: 2.0
+  yaw_ki: 0.1
+  yaw_kd: 0.5
+  yaw_tolerance: 0.05          # radians (~2.9°)
+  spin_speed: 0.6
+  spin_timeout: 30.0
+
+dead_reckoning:
+  surge_speed: 0.4
+  sway_speed: 0.3
+  speed_to_mps: 0.5            # Calibrate! Thrust→velocity conversion
+
+search_pattern:
+  pattern_type: 'expanding_square'
+  leg_length_m: 2.0
+  leg_increment_m: 1.0
+  search_speed: 0.3
+  timeout_sec: 120.0
+
+# ============== DRIVERS ==============
+actuator_driver:
+  torpedo_1_pin: 27
+  torpedo_2_pin: 22
+  dropper_1_pin: 23
+  dropper_2_pin: 24
+  pulse_duration_ms: 500
+  gpio_chip: '/dev/gpiochip0'

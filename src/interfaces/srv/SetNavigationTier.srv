@@ -1,0 +1,6 @@
+# Force a specific navigation tier
+uint8 tier          # 1=VSLAM, 2=VIO, 3=DEAD_RECKONING, 0=AUTO
+---
+bool success
+uint8 current_tier
+string message

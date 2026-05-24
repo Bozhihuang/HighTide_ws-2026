@@ -1,0 +1,5 @@
+# Fire a torpedo from a specific tube
+uint8 tube_id       # 1 or 2
+---
+bool success
+string message

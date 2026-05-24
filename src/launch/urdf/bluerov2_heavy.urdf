@@ -1,0 +1,189 @@
+<?xml version="1.0"?>
+<!--
+  BlueROV2 Heavy URDF — 8-thruster configuration
+  
+  This URDF defines the TF tree for the vehicle.
+  The ZED X Mini camera is mounted forward-facing on the frame.
+  All dimensions are approximate for competition purposes.
+-->
+<robot name="bluerov2_heavy" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ==================== BASE LINK ==================== -->
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <box size="0.457 0.338 0.254"/> <!-- ~18x13x10 inches -->
+      </geometry>
+      <material name="blue">
+        <color rgba="0.0 0.3 0.8 0.8"/>
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="0.457 0.338 0.254"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="11.5"/> <!-- ~11.5 kg -->
+      <inertia ixx="0.16" ixy="0.0" ixz="0.0"
+               iyy="0.16" iyz="0.0" izz="0.16"/>
+    </inertial>
+  </link>
+
+  <!-- ==================== IMU / FOG LINK ==================== -->
+  <link name="imu_link">
+    <visual>
+      <geometry>
+        <box size="0.05 0.05 0.02"/>
+      </geometry>
+      <material name="gray">
+        <color rgba="0.5 0.5 0.5 1.0"/>
+      </material>
+    </visual>
+  </link>
+
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <origin xyz="0.0 0.0 0.05" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ==================== ZED X MINI CAMERA ==================== -->
+  <link name="zed_camera_link">
+    <visual>
+      <geometry>
+        <box size="0.026 0.075 0.026"/> <!-- ZED X Mini dimensions -->
+      </geometry>
+      <material name="dark_gray">
+        <color rgba="0.2 0.2 0.2 1.0"/>
+      </material>
+    </visual>
+  </link>
+
+  <joint name="zed_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="zed_camera_link"/>
+    <!-- Mounted forward-facing at front of vehicle, slight tilt down -->
+    <origin xyz="0.20 0.0 0.0" rpy="0 0.1 0"/>
+  </joint>
+
+  <!-- ZED optical frames (standard ROS camera convention) -->
+  <link name="zed_left_camera_frame"/>
+  <joint name="zed_left_camera_joint" type="fixed">
+    <parent link="zed_camera_link"/>
+    <child link="zed_left_camera_frame"/>
+    <origin xyz="0.0 0.033 0.0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="zed_left_camera_optical_frame"/>
+  <joint name="zed_left_optical_joint" type="fixed">
+    <parent link="zed_left_camera_frame"/>
+    <child link="zed_left_camera_optical_frame"/>
+    <!-- Rotate to optical convention: Z forward, X right, Y down -->
+    <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+  </joint>
+
+  <link name="zed_right_camera_frame"/>
+  <joint name="zed_right_camera_joint" type="fixed">
+    <parent link="zed_camera_link"/>
+    <child link="zed_right_camera_frame"/>
+    <origin xyz="0.0 -0.033 0.0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ==================== TORPEDO LAUNCHERS ==================== -->
+  <link name="torpedo_launcher_link">
+    <visual>
+      <geometry>
+        <cylinder radius="0.02" length="0.15"/>
+      </geometry>
+      <material name="red">
+        <color rgba="0.8 0.1 0.1 1.0"/>
+      </material>
+    </visual>
+  </link>
+
+  <joint name="torpedo_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="torpedo_launcher_link"/>
+    <origin xyz="0.18 0.0 -0.05" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ==================== MARKER DROPPERS ==================== -->
+  <link name="marker_dropper_link">
+    <visual>
+      <geometry>
+        <cylinder radius="0.015" length="0.08"/>
+      </geometry>
+      <material name="green">
+        <color rgba="0.1 0.8 0.1 1.0"/>
+      </material>
+    </visual>
+  </link>
+
+  <joint name="dropper_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="marker_dropper_link"/>
+    <!-- Mounted underneath, pointing down -->
+    <origin xyz="0.0 0.0 -0.13" rpy="0 1.5708 0"/>
+  </joint>
+
+  <!-- ==================== THRUSTERS (8x BlueROV2 Heavy) ==================== -->
+  <!-- Horizontal thrusters (4x) — vectored configuration -->
+  <link name="thruster_1_link"/>
+  <joint name="thruster_1_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="thruster_1_link"/>
+    <origin xyz="0.15 0.10 0.0" rpy="0 0 0.7854"/>
+  </joint>
+
+  <link name="thruster_2_link"/>
+  <joint name="thruster_2_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="thruster_2_link"/>
+    <origin xyz="0.15 -0.10 0.0" rpy="0 0 -0.7854"/>
+  </joint>
+
+  <link name="thruster_3_link"/>
+  <joint name="thruster_3_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="thruster_3_link"/>
+    <origin xyz="-0.15 0.10 0.0" rpy="0 0 2.3562"/>
+  </joint>
+
+  <link name="thruster_4_link"/>
+  <joint name="thruster_4_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="thruster_4_link"/>
+    <origin xyz="-0.15 -0.10 0.0" rpy="0 0 -2.3562"/>
+  </joint>
+
+  <!-- Vertical thrusters (4x) — pointing up/down -->
+  <link name="thruster_5_link"/>
+  <joint name="thruster_5_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="thruster_5_link"/>
+    <origin xyz="0.12 0.11 0.0" rpy="0 1.5708 0"/>
+  </joint>
+
+  <link name="thruster_6_link"/>
+  <joint name="thruster_6_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="thruster_6_link"/>
+    <origin xyz="0.12 -0.11 0.0" rpy="0 1.5708 0"/>
+  </joint>
+
+  <link name="thruster_7_link"/>
+  <joint name="thruster_7_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="thruster_7_link"/>
+    <origin xyz="-0.12 0.11 0.0" rpy="0 1.5708 0"/>
+  </joint>
+
+  <link name="thruster_8_link"/>
+  <joint name="thruster_8_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="thruster_8_link"/>
+    <origin xyz="-0.12 -0.11 0.0" rpy="0 1.5708 0"/>
+  </joint>
+
+</robot>

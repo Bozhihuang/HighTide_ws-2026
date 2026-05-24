@@ -1,0 +1,5 @@
+# Drop a marker from a specific dropper
+uint8 dropper_id    # 1 or 2
+---
+bool success
+string message
