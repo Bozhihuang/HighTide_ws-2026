@@ -1,9 +1,9 @@
 """
-Full system launch — Brings up all HighTide nodes for competition.
+Full system launch — Brings up all hightide nodes for competition.
 
 Usage:
-  ros2 launch HighTide_launch full_system.launch.py
-  ros2 launch HighTide_launch full_system.launch.py sim:=true
+  ros2 launch hightide_launch full_system.launch.py
+  ros2 launch hightide_launch full_system.launch.py sim:=true
 """
 
 from launch import LaunchDescription
@@ -37,7 +37,7 @@ def generate_launch_description():
     fcu_url = LaunchConfiguration('fcu_url')
 
     localization_config = os.path.join(
-        get_package_share_directory('HighTide_localization'),
+        get_package_share_directory('hightide_localization'),
         'config', 'ekf_params.yaml')
 
     # ============== MAVROS ==============
@@ -79,13 +79,13 @@ def generate_launch_description():
         output='screen',
         parameters=[localization_config],
         remappings=[
-            ('odometry/filtered', '/HighTide/odometry/filtered'),
+            ('odometry/filtered', '/hightide/odometry/filtered'),
         ],
     )
 
     # ============== CONTROL NODES ==============
     rc_override = Node(
-        package='HighTide_control',
+        package='hightide_control',
         executable='rc_override_node',
         name='rc_override_node',
         output='screen',
@@ -96,7 +96,7 @@ def generate_launch_description():
     )
 
     depth_controller = Node(
-        package='HighTide_control',
+        package='hightide_control',
         executable='depth_controller_node',
         name='depth_controller_node',
         output='screen',
@@ -107,7 +107,7 @@ def generate_launch_description():
     )
 
     mode_manager = Node(
-        package='HighTide_control',
+        package='hightide_control',
         executable='mode_manager_node',
         name='mode_manager_node',
         output='screen',
@@ -115,7 +115,7 @@ def generate_launch_description():
 
     # ============== PERCEPTION NODES ==============
     yolo_detector = Node(
-        package='HighTide_perception',
+        package='hightide_perception',
         executable='yolo_detector_node',
         name='yolo_detector_node',
         output='screen',
@@ -128,7 +128,7 @@ def generate_launch_description():
     )
 
     target_tracker = Node(
-        package='HighTide_perception',
+        package='hightide_perception',
         executable='target_tracker_node',
         name='target_tracker_node',
         output='screen',
@@ -139,7 +139,7 @@ def generate_launch_description():
     )
 
     detection_viz = Node(
-        package='HighTide_perception',
+        package='hightide_perception',
         executable='detection_viz_node',
         name='detection_viz_node',
         output='screen',
@@ -147,7 +147,7 @@ def generate_launch_description():
 
     # ============== LOCALIZATION NODES ==============
     nav_tier_manager = Node(
-        package='HighTide_localization',
+        package='hightide_localization',
         executable='nav_tier_manager_node',
         name='nav_tier_manager_node',
         output='screen',
@@ -155,14 +155,14 @@ def generate_launch_description():
 
     # ============== NAVIGATION NODES ==============
     waypoint_navigator = Node(
-        package='HighTide_navigation',
+        package='hightide_navigation',
         executable='waypoint_navigator_node',
         name='waypoint_navigator_node',
         output='screen',
     )
 
     vision_servo = Node(
-        package='HighTide_navigation',
+        package='hightide_navigation',
         executable='vision_servo_node',
         name='vision_servo_node',
         output='screen',
@@ -172,14 +172,14 @@ def generate_launch_description():
     )
 
     yaw_controller = Node(
-        package='HighTide_navigation',
+        package='hightide_navigation',
         executable='yaw_controller_node',
         name='yaw_controller_node',
         output='screen',
     )
 
     search_pattern = Node(
-        package='HighTide_navigation',
+        package='hightide_navigation',
         executable='search_pattern_node',
         name='search_pattern_node',
         output='screen',
@@ -187,7 +187,7 @@ def generate_launch_description():
 
     # ============== DRIVERS ==============
     actuator_driver = Node(
-        package='HighTide_drivers',
+        package='hightide_drivers',
         executable='actuator_driver_node',
         name='actuator_driver_node',
         output='screen',
@@ -202,7 +202,7 @@ def generate_launch_description():
 
     # ============== MISSION ==============
     mission = Node(
-        package='HighTide_mission',
+        package='hightide_mission',
         executable='mission_node',
         name='mission_node',
         output='screen',

@@ -1,5 +1,5 @@
 from setuptools import setup
-package_name = 'HighTide_drivers'
+package_name = 'hightide_drivers'
 setup(
     name=package_name, version='1.0.0', packages=[package_name],
     data_files=[
@@ -7,10 +7,10 @@ setup(
         ('share/' + package_name, ['package.xml']),
     ],
     install_requires=['setuptools'], zip_safe=True,
-    maintainer='HighTide Team', maintainer_email='team@HighTide.org',
+    maintainer='hightide Team', maintainer_email='team@hightide.org',
     description='GPIO actuator drivers for torpedoes and marker droppers',
     license='MIT',
     entry_points={'console_scripts': [
-        'actuator_driver_node = HighTide_drivers.actuator_driver_node:main',
+        'actuator_driver_node = hightide_drivers.actuator_driver_node:main',
     ]},
 )

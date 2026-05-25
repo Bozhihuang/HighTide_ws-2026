@@ -1,5 +1,5 @@
 """
-Tests for HighTide_mission — Behavior tree blackboard and leaf logic.
+Tests for hightide_mission — Behavior tree blackboard and leaf logic.
 
 Covers:
   - Blackboard key constants correctness
@@ -14,13 +14,13 @@ class TestBlackboardKeys:
     """Ensure blackboard keys are defined and unique."""
 
     def test_keys_exist(self):
-        import HighTide_mission.behaviors.blackboard_keys as bb
+        import hightide_mission.behaviors.blackboard_keys as bb
         assert hasattr(bb, 'VEHICLE_ARMED')
         assert hasattr(bb, 'CURRENT_TASK')
         assert hasattr(bb, 'DETECTIONS')
         
     def test_keys_unique(self):
-        import HighTide_mission.behaviors.blackboard_keys as bb
+        import hightide_mission.behaviors.blackboard_keys as bb
         # Get all public string attributes
         keys = [getattr(bb, k) for k in dir(bb) 
                 if not k.startswith('_') and isinstance(getattr(bb, k), str)]

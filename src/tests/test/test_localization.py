@@ -1,5 +1,5 @@
 """
-Tests for HighTide_localization — Navigation Tier Manager state machine.
+Tests for hightide_localization — Navigation Tier Manager state machine.
 
 Covers:
   - State transitions between Tiers (VSLAM -> VIO -> DR)

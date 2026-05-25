@@ -2,7 +2,7 @@ from setuptools import setup
 import os
 from glob import glob
 
-package_name = 'HighTide_localization'
+package_name = 'hightide_localization'
 setup(
     name=package_name, version='1.0.0', packages=[package_name],
     data_files=[
@@ -11,10 +11,10 @@ setup(
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
     ],
     install_requires=['setuptools'], zip_safe=True,
-    maintainer='HighTide Team', maintainer_email='team@HighTide.org',
+    maintainer='hightide Team', maintainer_email='team@hightide.org',
     description='EKF sensor fusion and navigation tier management',
     license='MIT',
     entry_points={'console_scripts': [
-        'nav_tier_manager_node = HighTide_localization.nav_tier_manager_node:main',
+        'nav_tier_manager_node = hightide_localization.nav_tier_manager_node:main',
     ]},
 )

@@ -1,5 +1,5 @@
 from setuptools import setup
-package_name = 'HighTide_perception'
+package_name = 'hightide_perception'
 setup(
     name=package_name, version='1.0.0', packages=[package_name],
     data_files=[
@@ -7,12 +7,12 @@ setup(
         ('share/' + package_name, ['package.xml']),
     ],
     install_requires=['setuptools'], zip_safe=True,
-    maintainer='HighTide Team', maintainer_email='team@HighTide.org',
-    description='YOLO TensorRT detection and tracking for HighTide',
+    maintainer='hightide Team', maintainer_email='team@hightide.org',
+    description='YOLO TensorRT detection and tracking for hightide',
     license='MIT',
     entry_points={'console_scripts': [
-        'yolo_detector_node = HighTide_perception.yolo_detector_node:main',
-        'target_tracker_node = HighTide_perception.target_tracker_node:main',
-        'detection_viz_node = HighTide_perception.detection_viz_node:main',
+        'yolo_detector_node = hightide_perception.yolo_detector_node:main',
+        'target_tracker_node = hightide_perception.target_tracker_node:main',
+        'detection_viz_node = hightide_perception.detection_viz_node:main',
     ]},
 )

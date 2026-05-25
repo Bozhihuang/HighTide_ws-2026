@@ -11,13 +11,13 @@ import py_trees
 from unittest.mock import MagicMock
 
 # Import the subtree generators
-from HighTide_mission.behaviors.gate import create_gate_subtree
-from HighTide_mission.behaviors.slalom import create_slalom_subtree
-from HighTide_mission.behaviors.bins import create_bins_subtree
-from HighTide_mission.behaviors.torpedoes import create_torpedoes_subtree
-from HighTide_mission.behaviors.octagon import create_octagon_subtree
-from HighTide_mission.behaviors.return_home import create_return_home_subtree
-from HighTide_mission.behaviors.emergency import EmergencySurface
+from hightide_mission.behaviors.gate import create_gate_subtree
+from hightide_mission.behaviors.slalom import create_slalom_subtree
+from hightide_mission.behaviors.bins import create_bins_subtree
+from hightide_mission.behaviors.torpedoes import create_torpedoes_subtree
+from hightide_mission.behaviors.octagon import create_octagon_subtree
+from hightide_mission.behaviors.return_home import create_return_home_subtree
+from hightide_mission.behaviors.emergency import EmergencySurface
 
 
 class TestBehaviorTreeStructure:

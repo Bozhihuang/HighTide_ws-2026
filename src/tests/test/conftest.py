@@ -1,5 +1,5 @@
 """
-Shared test fixtures and helpers for HighTide unit tests.
+Shared test fixtures and helpers for hightide unit tests.
 
 Provides:
   - rclpy_init/shutdown management
@@ -53,7 +53,7 @@ def ros_node():
 def make_thruster_command(surge=0.0, sway=0.0, heave=0.0,
                           yaw=0.0, pitch=0.0, roll=0.0):
     """Build a ThrusterCommand message."""
-    from HighTide_interfaces.msg import ThrusterCommand
+    from hightide_interfaces.msg import ThrusterCommand
     msg = ThrusterCommand()
     msg.surge = float(surge)
     msg.sway = float(sway)
@@ -68,7 +68,7 @@ def make_detection(class_id=0, class_name='gate', confidence=0.9,
                    x_min=100.0, y_min=100.0, x_max=200.0, y_max=200.0,
                    depth_m=-1.0):
     """Build a Detection message."""
-    from HighTide_interfaces.msg import Detection
+    from hightide_interfaces.msg import Detection
     det = Detection()
     det.class_id = class_id
     det.class_name = class_name
@@ -87,7 +87,7 @@ def make_detection(class_id=0, class_name='gate', confidence=0.9,
 
 def make_detection_array(detections=None, image_width=1280, image_height=720):
     """Build a DetectionArray message."""
-    from HighTide_interfaces.msg import DetectionArray
+    from hightide_interfaces.msg import DetectionArray
     msg = DetectionArray()
     msg.image_width = image_width
     msg.image_height = image_height

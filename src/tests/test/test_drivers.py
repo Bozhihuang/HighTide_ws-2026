@@ -1,5 +1,5 @@
 """
-Tests for HighTide_drivers — GPIO actuator logic.
+Tests for hightide_drivers — GPIO actuator logic.
 
 Covers:
   - Actuator pin selection

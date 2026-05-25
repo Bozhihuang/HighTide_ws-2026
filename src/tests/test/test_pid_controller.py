@@ -1,5 +1,5 @@
 """
-Tests for the PID controller utility in HighTide_navigation.
+Tests for the PID controller utility in hightide_navigation.
 
 Covers:
   - Zero error produces zero output
@@ -15,7 +15,7 @@ Covers:
 
 import math
 import pytest
-from HighTide_navigation import PIDController, normalize_angle, quaternion_to_yaw
+from hightide_navigation import PIDController, normalize_angle, quaternion_to_yaw
 
 
 class TestPIDController:

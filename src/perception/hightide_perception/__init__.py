@@ -1,0 +1,31 @@
+# hightide_perception package
+
+# Competition YOLO class mapping
+CLASS_NAMES = {
+    0: 'gate',
+    1: 'gate_divider',
+    2: 'symbol_compass',
+    3: 'symbol_pickaxe',
+    4: 'symbol_lifering',
+    5: 'symbol_sos',
+    6: 'pipe_red',
+    7: 'pipe_white',
+    8: 'bin',
+    9: 'symbol_fire',
+    10: 'symbol_blood',
+    11: 'torpedo_board',
+    12: 'torpedo_hole_large',
+    13: 'torpedo_hole_small',
+    14: 'octagon',
+    15: 'table',
+    16: 'basket',
+    17: 'object_bolt',
+    18: 'object_plug',
+    19: 'object_pill',
+    20: 'object_bandaid',
+    21: 'symbol_warning',
+    22: 'symbol_helmet',
+    23: 'path_marker',
+    24: 'symbol_firetruck',
+    25: 'symbol_ambulance',
+}

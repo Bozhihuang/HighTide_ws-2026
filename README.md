@@ -1,10 +1,10 @@
-# 2026 HighTide ROS2 Workspace
+# 2026 hightide ROS2 Workspace
 
 ROS2 Humble workspace for RoboSub 2026
 
 ## Hardware & Dependencies
 
-HighTide is built on a distributed hardware architecture combining high-level vision processing and low-level flight control:
+hightide is built on a distributed hardware architecture combining high-level vision processing and low-level flight control:
 * **Compute**: ZED Box Mini running Ubuntu 22.04.
 * **Flight Controller**: Blue Robotics Navigator (with ArduSub).
 * **Vision & VIO**: ZED X Mini Stereo Camera.
@@ -45,18 +45,18 @@ subgraph Peripherals
 end
 
 %% =========================
-%% HIGHTIDE WORKSPACE
+%% hightide WORKSPACE
 %% =========================
-subgraph HT["HighTide Workspace"]
+subgraph HT["hightide Workspace"]
     style HT fill:#111827,stroke:#a78bfa,stroke-width:3px,color:#ffffff
 
     %% Packages = Purple
-    P[HighTide_perception]
-    L[HighTide_localization]
-    M[HighTide_mission]
-    N2[HighTide_navigation]
-    C[HighTide_control]
-    D[HighTide_drivers]
+    P[hightide_perception]
+    L[hightide_localization]
+    M[hightide_mission]
+    N2[hightide_navigation]
+    C[hightide_control]
+    D[hightide_drivers]
 
     style P fill:#7c3aed,stroke:#c4b5fd,color:#ffffff
     style L fill:#7c3aed,stroke:#c4b5fd,color:#ffffff
@@ -110,7 +110,7 @@ end
 ## Workspace and Packages
 
 ```text
-HighTide_ws/
+hightide_ws-2026/
 ├── src/
 │   ├── control/         # RC Override mapping, Depth PID, Mode switching
 │   ├── drivers/         # GPIO scripts for Torpedoes/Droppers
@@ -130,7 +130,7 @@ HighTide_ws/
 ### 1. Clone & Resolve Dependencies
 Navigate to your workspace and install ROS2 dependencies using `rosdep`:
 ```bash
-cd ~/HighTide_ws
+cd ~/HighTide_ws-2026
 rosdep update
 rosdep install --from-paths src --ignore-src -r -y
 ```
@@ -142,13 +142,13 @@ colcon build --symlink-install
 ```
 
 ### 3. Sourcing the Workspace
-ROS2 requires you to "source" the installation environment so it knows where your packages and nodes are. You must do this in *every* new terminal window before running HighTide commands.
+ROS2 requires you to "source" the installation environment so it knows where your packages and nodes are. You must do this in *every* new terminal window before running hightide commands.
 ```bash
 # Source the base ROS2 installation
 source /opt/ros/humble/setup.bash
 
-# Source the HighTide workspace
-source ~/HighTide_ws/install/setup.bash
+# Source the hightide workspace
+source ~/HighTide_ws-2026/install/setup.bash
 ```
 *(Tip: Add these lines to your `~/.bashrc` file to have them run automatically when you open a terminal).*
 
@@ -159,7 +159,7 @@ source ~/HighTide_ws/install/setup.bash
 ### Launching the Full System
 To boot up the entire autonomous pipeline (Perception, Navigation, Control, and Mission), use the master launch file:
 ```bash
-ros2 launch robosub_launch full_system.launch.py
+ros2 launch hightide_launch full_system.launch.py
 ```
 This single command reads `params.yaml`, spawns the URDF transforms, and brings up every node in the correct order.
 
@@ -167,17 +167,17 @@ This single command reads `params.yaml`, spawns the URDF transforms, and brings 
 When debugging, you often want to run a single node instead of the whole system. You can do this using `ros2 run`:
 ```bash
 # Example: Run only the YOLO detector
-ros2 run robosub_perception yolo_detector_node
+ros2 run hightide_perception yolo_detector_node
 
 # Example: Run only the RC override mapping node
-ros2 run robosub_control rc_override_node
+ros2 run hightide_control rc_override_node
 ```
 
 ### Launching in Simulation (Gazebo)
 If you are testing logic without hardware, you can launch the system in simulation mode. This bypasses the GPIO drivers and visual hardware, assuming Gazebo will publish simulated camera feeds and odometry:
 ```bash
 # Launch the system with the simulation flag set to true
-ros2 launch robosub_launch full_system.launch.py use_sim_time:=true
+ros2 launch hightide_launch full_system.launch.py use_sim_time:=true
 ```
 
 ---
@@ -196,13 +196,13 @@ To tune the sub:
 
 ## Testing
 
-The workspace includes a dedicated `robosub_tests` package containing two types of tests.
+The workspace includes a dedicated `hightide_tests` package containing two types of tests.
 
 ### 1. Bench Unit Tests
 Run these offline to verify the math (PIDs, vector translations, bounding box intersections) and the logic (Behavior Tree routing, mock fallbacks).
 ```bash
 # Run all unit tests
-colcon test --packages-select robosub_tests
+colcon test --packages-select hightide_tests
 
 # View the results
 colcon test-result --all
@@ -214,17 +214,17 @@ These are interactive Python scripts designed to be run while the sub is in the 
 Ensure MAVROS and the core nodes are running, then in a separate terminal:
 ```bash
 # Test 1: Verify GPIO firing
-ros2 run robosub_tests pool_test_actuators
+ros2 run hightide_tests pool_test_actuators
 
 # Test 2: Verify motor mappings (Surge, Sway, Heave, Yaw)
-ros2 run robosub_tests pool_test_thrusters
+ros2 run hightide_tests pool_test_thrusters
 
 # Test 3: Validate Alt-Hold and PID depth tuning
-ros2 run robosub_tests pool_test_depth
+ros2 run hightide_tests pool_test_depth
 
 # Test 4: Monitor FOG and VIO drift
-ros2 run robosub_tests pool_test_sensors
+ros2 run hightide_tests pool_test_sensors
 
 # Test 5: Test closed-loop distance waypoints
-ros2 run robosub_tests pool_test_navigation
+ros2 run hightide_tests pool_test_navigation
 ```

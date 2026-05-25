@@ -1,13 +1,13 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>HighTide_drivers</name>
+  <name>hightide_drivers</name>
   <version>1.0.0</version>
   <description>GPIO actuator drivers for torpedoes and marker droppers</description>
-  <maintainer email="team@HighTide.org">HighTide Team</maintainer>
+  <maintainer email="team@hightide.org">hightide Team</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_python</buildtool_depend>
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
-  <depend>HighTide_interfaces</depend>
+  <depend>hightide_interfaces</depend>
   <export><build_type>ament_python</build_type></export>
 </package>

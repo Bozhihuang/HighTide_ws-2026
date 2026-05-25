@@ -30,7 +30,7 @@ mode_manager:
 
 # ============== PERCEPTION ==============
 yolo_detector:
-  engine_path: '/home/zedbox/models/HighTide_yolov8n.engine'
+  engine_path: '/home/zedbox/models/hightide_yolov8n.engine'
   confidence_threshold: 0.5
   nms_threshold: 0.45
   input_width: 640

@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>HighTide_launch</name>
+  <name>hightide_launch</name>
   <version>1.0.0</version>
-  <description>Launch files and system-level configuration for the HighTide AUV</description>
-  <maintainer email="team@HighTide.org">HighTide Team</maintainer>
+  <description>Launch files and system-level configuration for the hightide AUV</description>
+  <maintainer email="team@hightide.org">hightide Team</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_python</buildtool_depend>
   <exec_depend>launch</exec_depend>
@@ -11,12 +11,12 @@
   <exec_depend>mavros</exec_depend>
   <exec_depend>zed_wrapper</exec_depend>
   <exec_depend>robot_localization</exec_depend>
-  <exec_depend>HighTide_interfaces</exec_depend>
-  <exec_depend>HighTide_control</exec_depend>
-  <exec_depend>HighTide_perception</exec_depend>
-  <exec_depend>HighTide_localization</exec_depend>
-  <exec_depend>HighTide_navigation</exec_depend>
-  <exec_depend>HighTide_mission</exec_depend>
-  <exec_depend>HighTide_drivers</exec_depend>
+  <exec_depend>hightide_interfaces</exec_depend>
+  <exec_depend>hightide_control</exec_depend>
+  <exec_depend>hightide_perception</exec_depend>
+  <exec_depend>hightide_localization</exec_depend>
+  <exec_depend>hightide_navigation</exec_depend>
+  <exec_depend>hightide_mission</exec_depend>
+  <exec_depend>hightide_drivers</exec_depend>
   <export><build_type>ament_python</build_type></export>
 </package>

@@ -1,5 +1,5 @@
 """
-Tests for HighTide_control — RC Override, Depth Controller, Mode Manager.
+Tests for hightide_control — RC Override, Depth Controller, Mode Manager.
 
 Covers:
   - PWM conversion (normalize_to_pwm)
@@ -21,7 +21,7 @@ class TestRCOverridePWMConversion:
 
     def _make_node_mock(self):
         """Create a mock RCOverrideNode with just the conversion function."""
-        from HighTide_control.rc_override_node import RCOverrideNode
+        from hightide_control.rc_override_node import RCOverrideNode
         # We can't instantiate the full node without rclpy, so test the math directly
         class PWMConverter:
             neutral_pwm = 1500
@@ -100,7 +100,7 @@ class TestChannelMapping:
     """Verify ArduSub channel constants are correct."""
 
     def test_channel_indices(self):
-        from HighTide_control.rc_override_node import (
+        from hightide_control.rc_override_node import (
             CH_PITCH, CH_ROLL, CH_THROTTLE, CH_YAW, CH_FORWARD, CH_LATERAL
         )
         assert CH_PITCH == 0
@@ -111,11 +111,11 @@ class TestChannelMapping:
         assert CH_LATERAL == 5
 
     def test_chan_nochange(self):
-        from HighTide_control.rc_override_node import CHAN_NOCHANGE
+        from hightide_control.rc_override_node import CHAN_NOCHANGE
         assert CHAN_NOCHANGE == 65535
 
     def test_num_channels(self):
-        from HighTide_control.rc_override_node import NUM_CHANNELS
+        from hightide_control.rc_override_node import NUM_CHANNELS
         assert NUM_CHANNELS == 18
 
 

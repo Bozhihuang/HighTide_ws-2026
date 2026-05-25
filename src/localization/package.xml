@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>HighTide_localization</name>
+  <name>hightide_localization</name>
   <version>1.0.0</version>
   <description>EKF sensor fusion (ZED VIO + FOG heading) and navigation tier management</description>
-  <maintainer email="team@HighTide.org">HighTide Team</maintainer>
+  <maintainer email="team@hightide.org">hightide Team</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_python</buildtool_depend>
   <depend>rclpy</depend>
@@ -13,6 +13,6 @@
   <depend>nav_msgs</depend>
   <depend>tf2_ros</depend>
   <depend>robot_localization</depend>
-  <depend>HighTide_interfaces</depend>
+  <depend>hightide_interfaces</depend>
   <export><build_type>ament_python</build_type></export>
 </package>

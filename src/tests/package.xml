@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>HighTide_tests</name>
+  <name>hightide_tests</name>
   <version>1.0.0</version>
-  <description>Unit and integration tests for all HighTide packages</description>
-  <maintainer email="team@HighTide.org">HighTide Team</maintainer>
+  <description>Unit and integration tests for all hightide packages</description>
+  <maintainer email="team@hightide.org">hightide Team</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
@@ -15,13 +15,13 @@
   <depend>sensor_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>mavros_msgs</depend>
-  <depend>HighTide_interfaces</depend>
-  <depend>HighTide_control</depend>
-  <depend>HighTide_perception</depend>
-  <depend>HighTide_localization</depend>
-  <depend>HighTide_navigation</depend>
-  <depend>HighTide_mission</depend>
-  <depend>HighTide_drivers</depend>
+  <depend>hightide_interfaces</depend>
+  <depend>hightide_control</depend>
+  <depend>hightide_perception</depend>
+  <depend>hightide_localization</depend>
+  <depend>hightide_navigation</depend>
+  <depend>hightide_mission</depend>
+  <depend>hightide_drivers</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_pep257</test_depend>

@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>HighTide_mission</name>
+  <name>hightide_mission</name>
   <version>1.0.0</version>
-  <description>py_trees behavior tree for HighTide competition mission execution</description>
-  <maintainer email="team@HighTide.org">HighTide Team</maintainer>
+  <description>py_trees behavior tree for hightide competition mission execution</description>
+  <maintainer email="team@hightide.org">hightide Team</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_python</buildtool_depend>
   <depend>rclpy</depend>
@@ -14,6 +14,6 @@
   <depend>nav_msgs</depend>
   <depend>mavros_msgs</depend>
   <depend>py_trees</depend>
-  <depend>HighTide_interfaces</depend>
+  <depend>hightide_interfaces</depend>
   <export><build_type>ament_python</build_type></export>
 </package>

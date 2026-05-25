@@ -1,5 +1,5 @@
 """
-Tests for HighTide_navigation — Waypoint math, Crab walk vision servo, Search pattern.
+Tests for hightide_navigation — Waypoint math, Crab walk vision servo, Search pattern.
 
 Covers:
   - Global to local coordinate transformation (Waypoint Navigator)
@@ -17,7 +17,7 @@ class TestWaypointMath:
 
     def _compute_errors(self, current_x, current_y, current_yaw, target_x, target_y):
         """Replicate the waypoint navigator's core math."""
-        from HighTide_navigation import normalize_angle
+        from hightide_navigation import normalize_angle
         # Global errors
         dx = target_x - current_x
         dy = target_y - current_y
