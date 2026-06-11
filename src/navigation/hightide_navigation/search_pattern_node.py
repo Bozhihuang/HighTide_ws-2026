@@ -12,7 +12,7 @@ import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
 from hightide_interfaces.msg import ThrusterCommand, DetectionArray
-from hightide_navigation import PIDController, normalize_angle, quaternion_to_yaw
+from hightide_navigation import PIDController, normalize_angle, quaternion_to_yaw 
 
 
 class SearchPatternNode(Node):
@@ -22,11 +22,15 @@ class SearchPatternNode(Node):
         super().__init__('search_pattern_node')
 
         self.declare_parameter('pattern_type', 'expanding_square')
-        self.declare_parameter('leg_length_m', 2.0)
-        self.declare_parameter('leg_increment_m', 1.0)
-        self.declare_parameter('search_speed', 0.3)
+        self.declare_parameter('leg_length_m', 0)
+        self.declare_parameter('leg_increment_m', 0)
+        self.declare_parameter('search_speed', 0)
         self.declare_parameter('search_class', '')
         self.declare_parameter('timeout_sec', 120.0)
+        self.declare_parameter('search_kp', 0.0)
+        self.declare_parameter('search_ki', 0.0)
+        self.declare_parameter('search_kd', 0.0)
+        
 
         self.pattern = self.get_parameter('pattern_type').value
         self.leg_length = self.get_parameter('leg_length_m').value
@@ -39,10 +43,14 @@ class SearchPatternNode(Node):
         self.target_found = False
         self.searching = False
 
-        self.heading_pid = PIDController(kp=2.0, ki=0.1, kd=0.5)
+        self.heading_pid = PIDController(
+            self.get_parameter('search_kp').value,
+            self.get_parameter('search_ki').value,
+            self.get_parameter('search_kd').value
+        )
 
         self.odom_sub = self.create_subscription(
-            Odometry, '/hightide/odometry/filtered', self._odom_callback, 10)
+            Odometry, '/odometry/filtered', self._odom_callback, 10)
         self.det_sub = self.create_subscription(
             DetectionArray, '/hightide/tracked_targets', self._det_callback, 10)
         self.cmd_pub = self.create_publisher(ThrusterCommand, '/hightide/cmd_vel', 10)

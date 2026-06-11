@@ -23,7 +23,7 @@ class NavigationPoolTest(Node):
         self.alt_hold_cli = self.create_client(Trigger, '/hightide/set_alt_hold')
         self.nav_client = ActionClient(self, NavigateToWaypoint, '/hightide/navigate_to_waypoint')
         
-        self.create_subscription(Odometry, '/hightide/odometry/filtered', self._odom_cb, 10)
+        self.create_subscription(Odometry, '/odometry/filtered', self._odom_cb, 10)
         self.current_pose = None
         
         while not self.nav_client.wait_for_server(timeout_sec=1.0):

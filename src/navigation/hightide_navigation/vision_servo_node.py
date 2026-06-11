@@ -31,24 +31,25 @@ class VisionServoNode(Node):
         self.declare_parameter('target_y_normalized', 0.5)
         self.declare_parameter('approach_distance_m', 1.0)
         self.declare_parameter('enabled', False)
-        self.declare_parameter('lateral_kp', 1.5)
-        self.declare_parameter('lateral_ki', 0.05)
-        self.declare_parameter('lateral_kd', 0.3)
-        self.declare_parameter('vertical_kp', 1.0)
-        self.declare_parameter('vertical_ki', 0.05)
-        self.declare_parameter('vertical_kd', 0.2)
-        self.declare_parameter('range_kp', 0.8)
-        self.declare_parameter('range_ki', 0.02)
-        self.declare_parameter('range_kd', 0.15)
+        self.declare_parameter('lateral_kp', 0)
+        self.declare_parameter('lateral_ki', 0)
+        self.declare_parameter('lateral_kd', 0)
+        self.declare_parameter('vertical_kp', 0)
+        self.declare_parameter('vertical_ki', 0)
+        self.declare_parameter('vertical_kd', 0)
+        self.declare_parameter('range_kp', 0)
+        self.declare_parameter('range_ki', 0)
+        self.declare_parameter('range_kd', 0)
         self.declare_parameter('publish_rate', 20.0)
+        self.declare_parameter('depth_scale', 0.1)
 
         self.target_class = self.get_parameter('target_class').value
         self.target_x = self.get_parameter('target_x_normalized').value
         self.target_y = self.get_parameter('target_y_normalized').value
         self.approach_dist = self.get_parameter('approach_distance_m').value
         self.enabled = self.get_parameter('enabled').value
+        self.depth_scale = self.get_parameter('depth_scale').value
 
-        # PID controllers
         self.lateral_pid = PIDController(
             self.get_parameter('lateral_kp').value,
             self.get_parameter('lateral_ki').value,
@@ -150,7 +151,7 @@ class VisionServoNode(Node):
         vertical_error = (target.center_y / img_h) - self.target_y
         depth_adj = self.vertical_pid.compute(vertical_error, dt)
         depth_msg = Float64()
-        depth_msg.data = depth_adj * 0.1  # Scale to meters adjustment
+        depth_msg.data = depth_adj * self.depth_scale  # Scale to meters adjustment
         self.depth_adj_pub.publish(depth_msg)
 
         # Range error: how far we are from desired approach distance

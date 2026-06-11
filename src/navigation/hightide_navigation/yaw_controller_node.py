@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""
-Yaw Controller Node — Precision heading control and style spins using FOG.
-
-Provides:
-  - /hightide/set_heading: Rotate to a specific heading
-  - /hightide/yaw_spin: Execute N full 360° spins (for style points)
-
-Because the FOG is rock-solid, the sub will snap back to exactly the
-original heading after any spin maneuver.
-"""
 
 import math
 import time as pytime
@@ -18,17 +8,16 @@ from sensor_msgs.msg import Imu
 from std_srvs.srv import Trigger
 from hightide_interfaces.msg import ThrusterCommand
 from hightide_navigation import PIDController, normalize_angle, quaternion_to_yaw
-
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 class YawControllerNode(Node):
-    """Precision yaw control and style spin executor using FOG heading."""
 
     def __init__(self):
         super().__init__('yaw_controller_node')
 
-        self.declare_parameter('yaw_kp', 2.0)
-        self.declare_parameter('yaw_ki', 0.1)
-        self.declare_parameter('yaw_kd', 0.5)
+        self.declare_parameter('yaw_kp', 0)
+        self.declare_parameter('yaw_ki', 0)
+        self.declare_parameter('yaw_kd', 0)
         self.declare_parameter('yaw_tolerance', 0.05)
         self.declare_parameter('spin_speed', 0.6)
         self.declare_parameter('spin_timeout', 30.0)
@@ -43,9 +32,13 @@ class YawControllerNode(Node):
 
         self.current_heading = 0.0
         self.heading_received = False
-
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
         self.imu_sub = self.create_subscription(
-            Imu, '/mavros/imu/data', self._imu_callback, 10)
+            Imu, '/mavros/imu/data', self._imu_callback, sensor_qos)
         self.cmd_pub = self.create_publisher(ThrusterCommand, '/hightide/cmd_vel', 10)
 
         # Style spin service (1 full 360° spin)

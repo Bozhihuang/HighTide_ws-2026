@@ -11,6 +11,7 @@ import rclpy
 from rclpy.node import Node
 from std_srvs.srv import SetBool, Trigger
 from std_msgs.msg import Float64
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 
 class DepthPoolTest(Node):
@@ -22,7 +23,12 @@ class DepthPoolTest(Node):
         self.depth_pub = self.create_publisher(Float64, '/hightide/target_depth', 10)
         
         self.current_depth = 0.0
-        self.create_subscription(Float64, '/mavros/global_position/rel_alt', self._depth_cb, 10)
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
+        self.create_subscription(Float64, '/mavros/global_position/rel_alt', self._depth_cb, sensor_qos)
         
         while not self.arm_cli.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('Waiting for arm service...')

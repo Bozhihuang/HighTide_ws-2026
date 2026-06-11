@@ -20,6 +20,8 @@ def generate_launch_description():
     # ============== ARGUMENTS ==============
     sim_arg = DeclareLaunchArgument('sim', default_value='false',
                                     description='Enable simulation mode')
+    run_mission_arg = DeclareLaunchArgument('run_mission', default_value='true', 
+                                    description='Run the autonomous mission tree')                                
     depth_arg = DeclareLaunchArgument('mission_depth', default_value='1.0',
                                       description='Mission depth in meters')
     timeout_arg = DeclareLaunchArgument('mission_timeout', default_value='900.0',
@@ -62,7 +64,7 @@ def generate_launch_description():
                          'launch', 'zed_camera.launch.py')
         ]),
         launch_arguments={
-            'camera_model': 'zedxm',  # ZED X Mini
+            'camera_model': 'zedxm',
             'publish_tf': 'true',
             'depth_mode': 'NEURAL',
             'pos_tracking_enabled': 'true',
@@ -78,9 +80,6 @@ def generate_launch_description():
         name='ekf_filter_node',
         output='screen',
         parameters=[localization_config],
-        remappings=[
-            ('odometry/filtered', '/hightide/odometry/filtered'),
-        ],
     )
 
     # ============== CONTROL NODES ==============
@@ -89,10 +88,7 @@ def generate_launch_description():
         executable='rc_override_node',
         name='rc_override_node',
         output='screen',
-        parameters=[{
-            'publish_rate': 20.0,
-            'deadzone': 0.05,
-        }],
+        parameters=[global_config],
     )
 
     depth_controller = Node(
@@ -100,10 +96,7 @@ def generate_launch_description():
         executable='depth_controller_node',
         name='depth_controller_node',
         output='screen',
-        parameters=[{
-            'kp': 100.0, 'ki': 5.0, 'kd': 20.0,
-            'publish_rate': 20.0,
-        }],
+        parameters=[global_config],
     )
 
     mode_manager = Node(
@@ -119,12 +112,10 @@ def generate_launch_description():
         executable='yolo_detector_node',
         name='yolo_detector_node',
         output='screen',
-        parameters=[{
-            'engine_path': yolo_engine,
-            'confidence_threshold': 0.5,
-            'nms_threshold': 0.45,
-            'publish_viz': True,
-        }],
+        parameters=[
+            global_config,
+            {'engine_path': yolo_engine}
+        ],
     )
 
     target_tracker = Node(
@@ -132,10 +123,7 @@ def generate_launch_description():
         executable='target_tracker_node',
         name='target_tracker_node',
         output='screen',
-        parameters=[{
-            'max_tracking_age': 1.0,
-            'iou_threshold': 0.3,
-        }],
+        parameters=[global_config],
     )
 
     detection_viz = Node(
@@ -159,6 +147,7 @@ def generate_launch_description():
         executable='waypoint_navigator_node',
         name='waypoint_navigator_node',
         output='screen',
+        parameters=[global_config],
     )
 
     vision_servo = Node(
@@ -166,9 +155,7 @@ def generate_launch_description():
         executable='vision_servo_node',
         name='vision_servo_node',
         output='screen',
-        parameters=[{
-            'enabled': False,  # Enabled by mission when needed
-        }],
+        parameters=[global_config],
     )
 
     yaw_controller = Node(
@@ -176,6 +163,7 @@ def generate_launch_description():
         executable='yaw_controller_node',
         name='yaw_controller_node',
         output='screen',
+        parameters=[global_config],
     )
 
     search_pattern = Node(
@@ -183,6 +171,7 @@ def generate_launch_description():
         executable='search_pattern_node',
         name='search_pattern_node',
         output='screen',
+        parameters=[global_config],
     )
 
     # ============== DRIVERS ==============
@@ -191,13 +180,7 @@ def generate_launch_description():
         executable='actuator_driver_node',
         name='actuator_driver_node',
         output='screen',
-        parameters=[{
-            'torpedo_1_pin': 27,
-            'torpedo_2_pin': 22,
-            'dropper_1_pin': 23,
-            'dropper_2_pin': 24,
-            'pulse_duration_ms': 500,
-        }],
+        parameters=[global_config],
     )
 
     # ============== MISSION ==============
@@ -206,15 +189,18 @@ def generate_launch_description():
         executable='mission_node',
         name='mission_node',
         output='screen',
-        parameters=[{
-            'mission_depth_m': mission_depth,
-            'mission_timeout_sec': mission_timeout,
-            'tick_rate': 10.0,
-        }],
+        condition=IfCondition(run_mission),
+        parameters=[
+            global_config,
+            {
+                'mission_depth_m': mission_depth,
+                'mission_timeout_sec': mission_timeout,
+            }
+        ],
     )
 
     return LaunchDescription([
-        sim_arg, depth_arg, timeout_arg, engine_arg, fcu_url_arg,
+        sim_arg, depth_arg, timeout_arg, engine_arg, fcu_url_arg, run_mission_arg,
         mavros_node,
         zed_launch,
         ekf_node,

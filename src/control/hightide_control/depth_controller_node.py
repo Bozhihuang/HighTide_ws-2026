@@ -15,6 +15,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64, Int32
 from hightide_interfaces.srv import SetDepth
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 
 class DepthControllerNode(Node):
@@ -24,9 +25,9 @@ class DepthControllerNode(Node):
         super().__init__('depth_controller_node')
 
         # PID parameters
-        self.declare_parameter('kp', 100.0)
-        self.declare_parameter('ki', 5.0)
-        self.declare_parameter('kd', 20.0)
+        self.declare_parameter('kp', 0)
+        self.declare_parameter('ki', 0)
+        self.declare_parameter('kd', 0)
         self.declare_parameter('max_output', 400)
         self.declare_parameter('publish_rate', 20.0)
         self.declare_parameter('depth_tolerance', 0.1)
@@ -47,11 +48,17 @@ class DepthControllerNode(Node):
         self.prev_error = 0.0
         self.integral = 0.0
         self.last_time = None
+        self.current_depth = 0.0
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
 
         # Subscribers
         self.depth_sub = self.create_subscription(
             Float64, '/mavros/global_position/rel_alt',
-            self._depth_callback, 10)
+            self._depth_callback, sensor_qos)
 
         self.target_sub = self.create_subscription(
             Float64, '/hightide/target_depth',

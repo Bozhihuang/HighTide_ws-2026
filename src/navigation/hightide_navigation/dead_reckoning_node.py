@@ -14,6 +14,7 @@ from sensor_msgs.msg import Imu
 from std_msgs.msg import Float64
 from hightide_interfaces.msg import ThrusterCommand
 from hightide_navigation import PIDController, normalize_angle, quaternion_to_yaw
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 
 class DeadReckoningNode(Node):
@@ -22,12 +23,12 @@ class DeadReckoningNode(Node):
     def __init__(self):
         super().__init__('dead_reckoning_node')
 
-        self.declare_parameter('surge_speed', 0.4)
-        self.declare_parameter('sway_speed', 0.3)
-        self.declare_parameter('speed_to_mps', 0.5)
-        self.declare_parameter('heading_kp', 2.0)
-        self.declare_parameter('heading_ki', 0.05)
-        self.declare_parameter('heading_kd', 0.5)
+        self.declare_parameter('surge_speed', 0)
+        self.declare_parameter('sway_speed', 0)
+        self.declare_parameter('speed_to_mps', 0)
+        self.declare_parameter('heading_kp', 0)
+        self.declare_parameter('heading_ki', 0)
+        self.declare_parameter('heading_kd', 0)
 
         self.surge_speed = self.get_parameter('surge_speed').value
         self.sway_speed = self.get_parameter('sway_speed').value
@@ -41,9 +42,13 @@ class DeadReckoningNode(Node):
         self.current_heading = 0.0
         self.heading_received = False
         self.executing = False
-
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
         self.imu_sub = self.create_subscription(
-            Imu, '/mavros/imu/data', self._imu_callback, 10)
+            Imu, '/mavros/imu/data', self._imu_callback, sensor_qos)
         self.cmd_pub = self.create_publisher(ThrusterCommand, '/hightide/cmd_vel', 10)
 
         # Dead reckoning command subscriber:

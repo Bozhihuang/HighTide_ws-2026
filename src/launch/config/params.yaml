@@ -1,14 +1,12 @@
-# Full system parameter overrides
-# Copy and modify for your specific vehicle
 
 # ============== MISSION ==============
-mission:
+mission_node:
   mission_depth_m: 1.0           # Competition pool depth target
   mission_timeout_sec: 900.0     # 15 minute mission window
   tick_rate: 10.0                # Behavior tree tick rate (Hz)
 
 # ============== CONTROL ==============
-rc_override:
+rc_override_node:
   publish_rate: 20.0
   max_pwm: 1900
   min_pwm: 1100
@@ -16,7 +14,7 @@ rc_override:
   deadzone: 0.05
   timeout_sec: 0.5              # Safety timeout — neutral after 500ms silence
 
-depth_controller:
+depth_controller_node:
   kp: 100.0
   ki: 5.0
   kd: 20.0
@@ -24,12 +22,12 @@ depth_controller:
   depth_tolerance: 0.1          # meters
   integral_max: 100.0
 
-mode_manager:
+mode_manager_node:
   barrel_roll_duration_sec: 3.0
   barrel_roll_pwm: 1900
 
 # ============== PERCEPTION ==============
-yolo_detector:
+yolo_detector_node:
   engine_path: '/home/zedbox/models/hightide_yolov8n.engine'
   confidence_threshold: 0.5
   nms_threshold: 0.45
@@ -37,19 +35,19 @@ yolo_detector:
   input_height: 640
   publish_viz: true
 
-target_tracker:
+target_tracker_node:
   max_tracking_age: 1.0         # seconds before track expires
   iou_threshold: 0.3
   depth_sample_radius: 5        # pixels
 
 # ============== LOCALIZATION ==============
-nav_tier_manager:
+nav_tier_manager_node:
   vslam_confidence_threshold: 0.80
   vio_confidence_threshold: 0.30
   stale_timeout_sec: 1.0
 
 # ============== NAVIGATION ==============
-waypoint_navigator:
+waypoint_navigator_node:
   surge_kp: 1.0
   surge_ki: 0.05
   surge_kd: 0.2
@@ -63,7 +61,7 @@ waypoint_navigator:
   yaw_tolerance: 0.1           # radians (~5.7°)
   max_speed: 0.6
 
-vision_servo:
+vision_servo_node:
   lateral_kp: 1.5
   lateral_ki: 0.05
   lateral_kd: 0.3
@@ -75,7 +73,7 @@ vision_servo:
   range_kd: 0.15
   approach_distance_m: 1.0
 
-yaw_controller:
+yaw_controller_node:
   yaw_kp: 2.0
   yaw_ki: 0.1
   yaw_kd: 0.5
@@ -83,23 +81,25 @@ yaw_controller:
   spin_speed: 0.6
   spin_timeout: 30.0
 
-dead_reckoning:
+dead_reckoning_node:
   surge_speed: 0.4
   sway_speed: 0.3
   speed_to_mps: 0.5            # Calibrate! Thrust→velocity conversion
 
-search_pattern:
+search_pattern_node:
   pattern_type: 'expanding_square'
   leg_length_m: 2.0
   leg_increment_m: 1.0
   search_speed: 0.3
   timeout_sec: 120.0
+  search_kp: 2.0
+  search_ki: 0.1
+  search_kd: 0.5
 
 # ============== DRIVERS ==============
-actuator_driver:
-  torpedo_1_pin: 27
-  torpedo_2_pin: 22
-  dropper_1_pin: 23
-  dropper_2_pin: 24
+actuator_driver_node:
+  torpedo_1_pin: 0.0
+  torpedo_2_pin: 1.0
+  dropper_1_pin: 2.0
+  dropper_2_pin: 3.0
   pulse_duration_ms: 500
-  gpio_chip: '/dev/gpiochip0'

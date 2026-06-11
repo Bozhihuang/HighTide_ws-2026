@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-"""
-Waypoint Navigator Node — PID-based waypoint navigation using EKF odometry.
-
-Decomposes position error into body-frame surge/sway for crab-walk movement.
-"""
 
 import math
 import rclpy
@@ -21,15 +16,15 @@ class WaypointNavigatorNode(Node):
     def __init__(self):
         super().__init__('waypoint_navigator_node')
 
-        self.declare_parameter('surge_kp', 1.0)
-        self.declare_parameter('surge_ki', 0.05)
-        self.declare_parameter('surge_kd', 0.2)
-        self.declare_parameter('sway_kp', 1.2)
-        self.declare_parameter('sway_ki', 0.05)
-        self.declare_parameter('sway_kd', 0.3)
-        self.declare_parameter('yaw_kp', 2.0)
-        self.declare_parameter('yaw_ki', 0.1)
-        self.declare_parameter('yaw_kd', 0.5)
+        self.declare_parameter('surge_kp', 0)
+        self.declare_parameter('surge_ki', 0)
+        self.declare_parameter('surge_kd', 0)
+        self.declare_parameter('sway_kp', 0)
+        self.declare_parameter('sway_ki', 0)
+        self.declare_parameter('sway_kd', 0)
+        self.declare_parameter('yaw_kp', 0)
+        self.declare_parameter('yaw_ki', 0)
+        self.declare_parameter('yaw_kd', 0)
         self.declare_parameter('position_tolerance', 0.3)
         self.declare_parameter('yaw_tolerance', 0.1)
         self.declare_parameter('max_speed', 0.6)
@@ -56,7 +51,7 @@ class WaypointNavigatorNode(Node):
         self.last_time = self.get_clock().now()
 
         self.odom_sub = self.create_subscription(
-            Odometry, '/hightide/odometry/filtered',
+            Odometry, '/odometry/filtered',
             self._odom_callback, 10)
         self.cmd_pub = self.create_publisher(ThrusterCommand, '/hightide/cmd_vel', 10)
 
