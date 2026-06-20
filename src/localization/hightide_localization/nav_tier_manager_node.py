@@ -31,6 +31,10 @@ class NavTierManagerNode(Node):
         self.vslam_thresh = self.get_parameter('vslam_confidence_threshold').value
         self.vio_thresh = self.get_parameter('vio_confidence_threshold').value
         self.stale_timeout = self.get_parameter('stale_timeout_sec').value
+        qos_profile = QoSProfile(
+        reliability=ReliabilityPolicy.BEST_EFFORT,
+        depth=10
+        )
 
         # State
         self.current_tier = NavigationTier.VIO  # Default

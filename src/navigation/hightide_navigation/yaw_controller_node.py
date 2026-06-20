@@ -15,9 +15,9 @@ class YawControllerNode(Node):
     def __init__(self):
         super().__init__('yaw_controller_node')
 
-        self.declare_parameter('yaw_kp', 0)
-        self.declare_parameter('yaw_ki', 0)
-        self.declare_parameter('yaw_kd', 0)
+        self.declare_parameter('yaw_kp', 0.0)
+        self.declare_parameter('yaw_ki', 0.0)
+        self.declare_parameter('yaw_kd', 0.0)
         self.declare_parameter('yaw_tolerance', 0.05)
         self.declare_parameter('spin_speed', 0.6)
         self.declare_parameter('spin_timeout', 30.0)

@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 """
 Actuator Driver Node — Controls torpedoes and marker droppers via MAVROS relay commands.
-
-Replaces the previous RPi GPIO implementation with MAV_CMD_DO_SET_RELAY (181) 
-commands sent directly to the Blue Robotics Navigator via MAVLink.
 """
 
 import time as pytime
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.callback_groups import ReentrantCallbackGroup
 
 from hightide_interfaces.srv import FireTorpedo, DropMarker
 from mavros_msgs.srv import CommandLong
@@ -22,7 +19,6 @@ class ActuatorDriverNode(Node):
     def __init__(self):
         super().__init__('actuator_driver_node')
 
-        # Relay pin mapping (e.g. 0.0, 1.0, 2.0, 3.0 on the Navigator)
         self.declare_parameter('torpedo_1_relay', 0.0)
         self.declare_parameter('torpedo_2_relay', 1.0)
         self.declare_parameter('dropper_1_relay', 2.0)
@@ -37,12 +33,12 @@ class ActuatorDriverNode(Node):
         }
         self.pulse_ms = self.get_parameter('pulse_duration_ms').value
 
-        # Track fired state (prevent double-fire)
         self.torpedoes_fired = {1: False, 2: False}
         self.markers_dropped = {1: False, 2: False}
 
-        # Setup callback groups for blocking service calls
-        self.cb_group = MutuallyExclusiveCallbackGroup()
+        # FIX: Use a single Reentrant group. This allows the node to spin up 
+        # a new thread for every incoming and outgoing request without deadlocking.
+        self.cb_group = ReentrantCallbackGroup()
 
         # MAVROS command service
         self.cmd_client = self.create_client(
@@ -79,44 +75,47 @@ class ActuatorDriverNode(Node):
         req.command = 181  # MAV_CMD_DO_SET_RELAY
         req.broadcast = False
         req.confirmation = 0
-        req.param1 = relay_pin  # Relay pin number
-        req.param2 = state      # 1.0 = ON, 0.0 = OFF
+        req.param1 = relay_pin  
+        req.param2 = state      
         req.param3 = 0.0
         req.param4 = 0.0
         req.param5 = 0.0
         req.param6 = 0.0
         req.param7 = 0.0
 
-        # Send the request and block until response is received
-        future = self.cmd_client.call_async(req)
+        # FIX: Direct synchronous call. Because we are in a Reentrant group 
+        # inside a MultiThreadedExecutor, this safely mimics the terminal CLI call.
+        result = self.cmd_client.call(req)
         
-        # Spin until complete. We can do this safely because we use a 
-        # MultiThreadedExecutor and mutually exclusive callback groups.
-        rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)
-        
-        result = future.result()
-        if result is not None:
-            return result.success
-        return False
+        if result.success:
+            return True
+        else:
+            # Decode the exact reason ArduSub rejected it
+            reasons = {
+                1: 'TEMPORARILY REJECTED',
+                2: 'DENIED',
+                3: 'UNSUPPORTED (Check QGroundControl RELAY_PIN params)',
+                4: 'FAILED',
+                5: 'TIMEOUT (Submarine did not acknowledge)'
+            }
+            error_msg = reasons.get(result.result, f'UNKNOWN CODE {result.result}')
+            self.get_logger().error(f'MAVROS Rejected Command! Reason: {error_msg}')
+            return False
 
     def _actuate_relay(self, name: str) -> bool:
-        """Pulse a relay HIGH (1.0) for pulse_duration_ms, then LOW (0.0)."""
         relay_pin = self.relays.get(name)
         if relay_pin is None:
             return False
 
         self.get_logger().info(f'Actuating {name} (Relay {relay_pin}) for {self.pulse_ms}ms')
 
-        # Turn ON
         success_on = self._set_relay(relay_pin, 1.0)
         if not success_on:
             self.get_logger().error(f'Failed to turn ON {name}')
             return False
 
-        # Wait for the physical mechanism to trigger
         pytime.sleep(self.pulse_ms / 1000.0)
 
-        # Turn OFF
         success_off = self._set_relay(relay_pin, 0.0)
         if not success_off:
             self.get_logger().error(f'Failed to turn OFF {name}')
@@ -125,7 +124,6 @@ class ActuatorDriverNode(Node):
         return True
 
     def _fire_torpedo(self, request, response):
-        """Service Callback: Fire torpedo from specified tube."""
         tube_id = request.tube_id
 
         if tube_id not in (1, 2):
@@ -151,7 +149,6 @@ class ActuatorDriverNode(Node):
         return response
 
     def _drop_marker(self, request, response):
-        """Service Callback: Drop marker from specified dropper."""
         dropper_id = request.dropper_id
 
         if dropper_id not in (1, 2):
@@ -181,9 +178,9 @@ def main(args=None):
     rclpy.init(args=args)
     node = ActuatorDriverNode()
     
-    # Must use MultiThreadedExecutor to allow the service callback to 
-    # block while waiting for the MAVROS client future to complete.
-    executor = MultiThreadedExecutor()
+    # We increase the thread count to 4 to ensure there is always 
+    # a thread available for the MAVROS response to arrive on.
+    executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
     
     try:

@@ -1,16 +1,17 @@
+#!/usr/bin/env python3
 """
 Full system launch — Brings up all hightide nodes for competition.
 
 Usage:
   ros2 launch hightide_launch full_system.launch.py
-  ros2 launch hightide_launch full_system.launch.py sim:=true
+  ros2 launch hightide_launch full_system.launch.py run_mission:=false
 """
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.substitutions import LaunchConfiguration
 from launch.conditions import IfCondition, UnlessCondition
-from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.launch_description_sources import PythonLaunchDescriptionSource, AnyLaunchDescriptionSource
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 import os
@@ -28,33 +29,41 @@ def generate_launch_description():
                                         description='Mission timeout in seconds')
     engine_arg = DeclareLaunchArgument('yolo_engine', default_value='',
                                        description='Path to TensorRT engine file')
+    
+    # Defaults the argument to your verified working tether connection parameter
     fcu_url_arg = DeclareLaunchArgument('fcu_url',
-                                         default_value='/dev/ttyACM0:115200',
+                                         default_value='udp://192.168.2.1:14550@',
                                          description='FCU connection URL')
 
+    # Resolve Launch Configurations
     sim = LaunchConfiguration('sim')
+    run_mission = LaunchConfiguration('run_mission')
     mission_depth = LaunchConfiguration('mission_depth')
     mission_timeout = LaunchConfiguration('mission_timeout')
     yolo_engine = LaunchConfiguration('yolo_engine')
     fcu_url = LaunchConfiguration('fcu_url')
 
+    # Locate Configuration File Paths
     localization_config = os.path.join(
         get_package_share_directory('hightide_localization'),
         'config', 'ekf_params.yaml')
 
+    global_config = os.path.join(
+        get_package_share_directory('hightide_launch'),
+        'config', 'params.yaml')
+
     # ============== MAVROS ==============
-    mavros_node = Node(
-        package='mavros',
-        executable='mavros_node',
-        name='mavros',
-        output='screen',
-        parameters=[{
+    # Exactly mirrors your working alias: 
+    # ros2 launch mavros apm.launch fcu_url:=udp://192.168.2.1:14550@ system_id:=1
+    mavros_launch = IncludeLaunchDescription(
+        AnyLaunchDescriptionSource([
+            os.path.join(get_package_share_directory('mavros'),
+                         'launch', 'apm.launch')
+        ]),
+        launch_arguments={
             'fcu_url': fcu_url,
-            'gcs_url': '',
-            'target_system_id': 1,
-            'target_component_id': 1,
-            'system_id': 255,  # Required for ArduSub to accept GCS commands
-        }],
+            'system_id': '1',
+        }.items(),
     )
 
     # ============== ZED CAMERA ==============
@@ -107,24 +116,25 @@ def generate_launch_description():
     )
 
     # ============== PERCEPTION NODES ==============
-    yolo_detector = Node(
-        package='hightide_perception',
-        executable='yolo_detector_node',
-        name='yolo_detector_node',
-        output='screen',
-        parameters=[
-            global_config,
-            {'engine_path': yolo_engine}
-        ],
-    )
+    # Commented out pending YOLO Engine deployment
+    # yolo_detector = Node(
+    #     package='hightide_perception',
+    #     executable='yolo_detector_node',
+    #     name='yolo_detector_node',
+    #     output='screen',
+    #     parameters=[
+    #         global_config,
+    #         {'engine_path': yolo_engine}
+    #     ],
+    # )
 
-    target_tracker = Node(
-        package='hightide_perception',
-        executable='target_tracker_node',
-        name='target_tracker_node',
-        output='screen',
-        parameters=[global_config],
-    )
+    # target_tracker = Node(
+    #     package='hightide_perception',
+    #     executable='target_tracker_node',
+    #     name='target_tracker_node',
+    #     output='screen',
+    #     parameters=[global_config],
+    # )
 
     detection_viz = Node(
         package='hightide_perception',
@@ -201,14 +211,14 @@ def generate_launch_description():
 
     return LaunchDescription([
         sim_arg, depth_arg, timeout_arg, engine_arg, fcu_url_arg, run_mission_arg,
-        mavros_node,
+        # mavros_launch,
         zed_launch,
         ekf_node,
         rc_override,
         depth_controller,
         mode_manager,
-        yolo_detector,
-        target_tracker,
+        # yolo_detector,
+        # target_tracker,
         detection_viz,
         nav_tier_manager,
         waypoint_navigator,
