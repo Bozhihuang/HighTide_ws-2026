@@ -43,17 +43,12 @@ class NavTierManagerNode(Node):
         self.last_odom_time = None
         self.last_imu_time = None
         self.fog_available = False
-        sensor_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10
-        )
         # Subscribers
         self.odom_sub = self.create_subscription(
             Odometry, '/zed/zed_node/odom',
             self._odom_callback, 10)
         self.imu_sub = self.create_subscription(
-            Imu, '/mavros/imu/data', self._imu_callback, sensor_qos)
+            Imu, '/mavros/imu/data', self._imu_callback, qos_profile)
 
         # Publisher
         self.tier_pub = self.create_publisher(
