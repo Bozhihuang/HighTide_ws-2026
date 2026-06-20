@@ -13,6 +13,8 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
 from hightide_interfaces.msg import NavigationTier
 from hightide_interfaces.srv import SetNavigationTier
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+
 
 
 class NavTierManagerNode(Node):
@@ -37,14 +39,17 @@ class NavTierManagerNode(Node):
         self.last_odom_time = None
         self.last_imu_time = None
         self.fog_available = False
-
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
         # Subscribers
         self.odom_sub = self.create_subscription(
             Odometry, '/zed/zed_node/odom',
             self._odom_callback, 10)
         self.imu_sub = self.create_subscription(
-            Imu, '/mavros/imu/data',
-            self._imu_callback, 10)
+            Imu, '/mavros/imu/data', self._imu_callback, sensor_qos)
 
         # Publisher
         self.tier_pub = self.create_publisher(
