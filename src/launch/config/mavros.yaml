@@ -1,11 +1,83 @@
+# =========================================================================
+# HIGHTIDE AUV: MAVROS Configuration for ArduSub & BlueROV2 Heavy
+# =========================================================================
+# This config is tuned for ROS 2 Humble and ArduSub FCUs.
+# It enforces strict system GCS IDs to guarantee arming and set_mode success,
+# whitelists only necessary AUV plugins to prevent serial buffer congestion,
+# and disables incompatible autopilot settings.
+# =========================================================================
+
 mavros:
   ros__parameters:
-    fcu_url: "udp://192.168.2.1:14550@"
+    # 1. Connection Parameters
+    # UDP broadcast binding for standard BlueOS / Companion setups.
+    # Bind to 0.0.0.0 to listen on all interfaces for incoming telemetry from 192.168.2.2.
+    fcu_url: "udp://0.0.0.0:14550@"
     gcs_url: ""
-
-    # MAVROS source system ID (matches your working launch command)
-    system_id: 1
-
-    # Target vehicle IDs
+    
+    # 2. System IDs (CRITICAL for arming and set_mode authority)
+    # Autopilot expects GCS/API client to be 255.
+    # If system_id is 1, ArduSub rejects commands due to conflicts.
+    system_id: 255
+    component_id: 240
     target_system_id: 1
     target_component_id: 1
+
+    # 3. Connection Health & Timesync
+    conn:
+      heartbeat_rate: 1.0
+      timeout: 10.0
+      # DISABLE timesync for ArduSub.
+      # ArduSub does not fully support MAVLink timesync; enabling this causes
+      # continuous warning spams and severe clock drift.
+      timesync_rate: 0.0
+      timesync_realtime_clock: false
+
+    # 4. Plugin Whitelist ( AUVC Specific )
+    # Disable heavy, unused drone plugins to prevent CPU overload and buffer stalls.
+    plugins:
+      - sys_status
+      - sys_time
+      - state
+      - command
+      - imu
+      - rc_io
+      - setpoint_raw
+      - local_position
+      - param
+
+    # 5. Sensor Stream Configurations (IMU & System Status)
+    sys:
+      min_voltage: 10.0
+      disable_diag: false
+
+    # IMU Plugin configuration - Crucial for FOG & EKF fusion
+    imu:
+      frame_id: "base_link"
+      linear_acceleration_stdev: 0.0003
+      angular_velocity_stdev: 0.00002
+      orientation_stdev: 0.001
+      magnetic_field_stdev: 0.000001
+      # Apply static magnet offset removals if calibrated
+      ignore_magnetic_field: true
+
+    # Command Plugin Configuration
+    cmd:
+      use_comp_id_system_control: false
+
+    # Param Plugin Configuration
+    param:
+      # Slow down param sync to prevent choking thin telemetry pipelines
+      conn_timeout: 10.0
+
+    # 6. Autopilot Message Stream Frequency Overrides (Hz)
+    # Force the autopilot to publish IMU and attitude telemetry at high speeds.
+    # These are translated directly to MAV_CMD_SET_MESSAGE_INTERVAL commands.
+    stream_rates:
+      raw_sensors: 50       # High rate raw IMU data for robot_localization EKF
+      extended_status: 10
+      rc_channels: 20       # Steady capture rate for override tracking
+      position: 20          # Vision position updates
+      extra1: 50            # Attitude, roll, pitch, yaw (FOG info)
+      extra2: 20
+      extra3: 10

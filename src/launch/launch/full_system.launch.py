@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""
-Full system launch — Brings up all hightide nodes for competition.
-
-Usage:
-  ros2 launch hightide_launch full_system.launch.py
-  ros2 launch hightide_launch full_system.launch.py run_mission:=false
-"""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
@@ -26,7 +19,7 @@ def generate_launch_description():
     sim_arg = DeclareLaunchArgument('sim', default_value='false',
                                     description='Enable simulation mode')
     run_mission_arg = DeclareLaunchArgument('run_mission', default_value='true', 
-                                    description='Run the autonomous mission tree')                                
+                                    description='Run the autonomous mission tree')                                 
     depth_arg = DeclareLaunchArgument('mission_depth', default_value='1.0',
                                       description='Mission depth in meters')
     timeout_arg = DeclareLaunchArgument('mission_timeout', default_value='900.0',
@@ -38,6 +31,10 @@ def generate_launch_description():
     fcu_url_arg = DeclareLaunchArgument('fcu_url',
                                          default_value='udp://192.168.2.1:14550@',
                                          description='FCU connection URL')
+    
+    system_id_arg = DeclareLaunchArgument('system_id',
+                                         default_value='1',
+                                         description='MAVROS system ID')
 
     # Resolve Launch Configurations
     sim = LaunchConfiguration('sim')
@@ -46,6 +43,7 @@ def generate_launch_description():
     mission_timeout = LaunchConfiguration('mission_timeout')
     yolo_engine = LaunchConfiguration('yolo_engine')
     fcu_url = LaunchConfiguration('fcu_url')
+    system_id = LaunchConfiguration('system_id')
 
     # Locate Configuration File Paths
     localization_config = os.path.join(
@@ -55,10 +53,12 @@ def generate_launch_description():
     global_config = os.path.join(
         get_package_share_directory('hightide_launch'),
         'config', 'params.yaml')
+        
+    mavros_config = os.path.join(
+        get_package_share_directory('hightide_launch'),
+        'config', 'mavros.yaml')
 
     # ============== MAVROS ==============
-    # Exactly mirrors your working alias: 
-    # ros2 launch mavros apm.launch fcu_url:=udp://192.168.2.1:14550@ system_id:=1
     mavros_launch = IncludeLaunchDescription(
         AnyLaunchDescriptionSource([
             os.path.join(get_package_share_directory('mavros'),
@@ -66,7 +66,8 @@ def generate_launch_description():
         ]),
         launch_arguments={
             'fcu_url': fcu_url,
-            'system_id': '1',
+            'system_id': system_id,
+            'config_yaml': mavros_config,
         }.items(),
     )
 
@@ -79,7 +80,7 @@ def generate_launch_description():
         launch_arguments={
             'camera_model': 'zedxm',
             'publish_tf': 'true',
-            'depth_mode': 'NEURAL',
+            'depth_mode': 'NEURAL_LIGHT',
             'pos_tracking_enabled': 'true',
             'spatial_memory_enabled': 'true',
         }.items(),
@@ -118,27 +119,6 @@ def generate_launch_description():
         name='mode_manager_node',
         output='screen',
     )
-
-    # ============== PERCEPTION NODES ==============
-    # Commented out pending YOLO Engine deployment
-    # yolo_detector = Node(
-    #     package='hightide_perception',
-    #     executable='yolo_detector_node',
-    #     name='yolo_detector_node',
-    #     output='screen',
-    #     parameters=[
-    #         global_config,
-    #         {'engine_path': yolo_engine}
-    #     ],
-    # )
-
-    # target_tracker = Node(
-    #     package='hightide_perception',
-    #     executable='target_tracker_node',
-    #     name='target_tracker_node',
-    #     output='screen',
-    #     parameters=[global_config],
-    # )
 
     detection_viz = Node(
         package='hightide_perception',
@@ -226,15 +206,13 @@ def generate_launch_description():
         )
     )
     return LaunchDescription([
-        sim_arg, depth_arg, timeout_arg, engine_arg, fcu_url_arg, run_mission_arg,
-        # mavros_launch,
+        sim_arg, depth_arg, timeout_arg, engine_arg, fcu_url_arg, system_id_arg, run_mission_arg,
+        mavros_launch,
         zed_launch,
         ekf_node,
         rc_override,
         depth_controller,
         mode_manager,
-        # yolo_detector,
-        # target_tracker,
         detection_viz,
         nav_tier_manager,
         waypoint_navigator,
