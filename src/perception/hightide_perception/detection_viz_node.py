@@ -36,7 +36,7 @@ class DetectionVizNode(Node):
         self.latest_detections = None
 
         self.image_sub = self.create_subscription(
-            Image, '/zed/zed_node/rgb/image_rect_color',
+            Image, '/mavros/zed/rgb/color/rect/image',
             self._image_callback, 5)
         self.det_sub = self.create_subscription(
             DetectionArray, '/hightide/tracked_targets',

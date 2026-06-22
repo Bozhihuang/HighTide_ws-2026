@@ -70,7 +70,7 @@ class TargetTrackerNode(Node):
             DetectionArray, '/hightide/detections',
             self._detection_callback, 10)
         self.depth_sub = self.create_subscription(
-            Image, '/zed/zed_node/depth/depth_registered',
+            Image, '/mavros/zed/depth/depth_registered',
             self._depth_callback, 5)
 
         # Publisher

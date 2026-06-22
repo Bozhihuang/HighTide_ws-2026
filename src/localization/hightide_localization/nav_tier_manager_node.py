@@ -45,7 +45,7 @@ class NavTierManagerNode(Node):
         self.fog_available = False
         # Subscribers
         self.odom_sub = self.create_subscription(
-            Odometry, '/zed/zed_node/odom',
+            Odometry, '/mavros/zed/odom',
             self._odom_callback, 10)
         self.imu_sub = self.create_subscription(
             Imu, '/mavros/imu/data', self._imu_callback, qos_profile)

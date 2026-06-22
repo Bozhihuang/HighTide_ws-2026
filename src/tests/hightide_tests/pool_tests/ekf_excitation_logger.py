@@ -4,7 +4,9 @@ HighTide AUV - EKF Data Excitation Logger
 Automates diverse, repeatable, and coupled discrete motions to strictly excite 
 the Extended Kalman Filter (EKF) states for process noise (Q) identification.
 
-THEORETICAL ALIGNMENT:
+THEORETICAL ALIGNMENT & SYSTEM AUTOMATION:
+- Automatic Bag Recording: Dynamically spawns and kills isolated 'ros2 bag record' 
+  subprocesses using POSIX process groups to eliminate manual operator timing errors.
 - Continuous Background Publishing: Prevents RC override timeouts and auto-disarms 
   by broadcasting ThrusterCommands at 20 Hz continuously, even during blocking 
   service calls and baseline wait periods.
@@ -15,8 +17,6 @@ THEORETICAL ALIGNMENT:
 - Actuator Saturation Limits: MANUAL mode pitch/roll commands are strictly bounded 
   to low amplitudes (0.2 - 0.3) to excite the plant dynamics without fighting 
   hidden stabilizing filters.
-- Independent Sampling: Sequence loops are single-pass per run. For true EM 
-  consistency, run this script multiple times to gather independent bags.
 """
 
 import rclpy
@@ -25,6 +25,9 @@ from hightide_interfaces.msg import ThrusterCommand
 from std_srvs.srv import SetBool, Trigger
 import time
 import threading
+import subprocess
+import os
+import signal
 
 class EKFExcitationLogger(Node):
     def __init__(self):
@@ -39,8 +42,10 @@ class EKFExcitationLogger(Node):
         self.current_cmd.pitch = 0.0
         self.current_cmd.yaw = 0.0
 
+        # Subprocess tracking for automatic rosbag recording
+        self.bag_proc = None
+
         # Publishers and Clients
-        # CRITICAL FIX: Publish directly to /hightide/cmd_vel to match working pool tests
         self.control_pub = self.create_publisher(ThrusterCommand, '/hightide/cmd_vel', 10)
         self.arm_client = self.create_client(SetBool, '/hightide/arm')
         self.alt_hold_client = self.create_client(Trigger, '/hightide/set_alt_hold')
@@ -110,9 +115,44 @@ class EKFExcitationLogger(Node):
         self.worker_thread = threading.Thread(target=self.run)
         self.worker_thread.start()
 
+    def start_bag_recording(self, bag_name):
+        """Spawns an asynchronous ROS 2 bag record process in its own process group."""
+        self.get_logger().info(f"--- STARTING ROS 2 BAG RECORDING: {bag_name} ---")
+        topics = [
+            "/zed/odom",
+            "/mavros/imu/data",
+            "/odometry/filtered",
+            "/hightide/cmd_vel"
+        ]
+        cmd = ["ros2", "bag", "record", "-o", bag_name] + topics
+        
+        # We use preexec_fn=os.setsid to isolate the recording process group.
+        # This prevents child database writing processes from orphaning on SIGINT.
+        try:
+            self.bag_proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, # Corrected: Redirect error logs properly using standard DEVNULL
+                preexec_fn=os.setsid
+            )
+        except Exception as e:
+            self.get_logger().error(f"Failed to trigger automatic ROS 2 bag recording: {e}")
+
+    def stop_bag_recording(self):
+        """Gracefully terminates the current ROS 2 bag recording process."""
+        if self.bag_proc is not None:
+            self.get_logger().info("Stopping ROS 2 bag recorder...")
+            try:
+                # Send SIGINT to the entire process group to ensure clean database writes
+                os.killpg(os.getpgid(self.bag_proc.pid), signal.SIGINT)
+                self.bag_proc.wait(timeout=5.0)
+            except Exception as e:
+                self.get_logger().warn(f"Bag process termination warning: {e}")
+            finally:
+                self.bag_proc = None
+
     def publish_current_command(self):
         """Continuously publishes the current command target to maintain failsafes."""
-        # CRITICAL FIX: Assign a fresh timestamp to satisfy PX4/watchdog timeout checks
         self.current_cmd.header.stamp = self.get_clock().now().to_msg()
         self.control_pub.publish(self.current_cmd)
 
@@ -202,37 +242,51 @@ class EKFExcitationLogger(Node):
         if not self.set_arm_state(True):
             return
 
-        # 3. Phase A Baseline
-        self.execute_step(25.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "START BAG 1 NOW: Phase A Baseline (Noise Floor)")
+        # 3. Phase A Baseline (No Recording yet - just pure system stabilization check)
+        self.execute_step(5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Preparing System...")
 
-        # 4. Phase B & C Alt Hold sweep parameters
+        # 4. Start automatic recording of Bag 1
+        self.start_bag_recording("bag_alt_hold")
+        self.execute_step(20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Phase A Baseline (Noise Floor)")
+
+        # 5. Phase B & C Alt Hold sweep parameters
         for step in self.alt_hold_pass:
             duration, surge, sway, heave, roll, pitch, yaw, mode, label = step
             self.execute_step(duration, surge, sway, heave, roll, pitch, yaw, label)
 
-        # 5. Split logs transition window (Timer continues to keep vehicle armed with neutral signals)
-        self.get_logger().warn("\n" + "!"*60)
-        self.get_logger().warn(" STOP RECORDING BAG 1 (Translational Stats collected).")
-        self.get_logger().warn(" START RECORDING BAG 2 (Rotational Stats) IMMEDIATELY.")
-        self.get_logger().warn("!"*60 + "\n")
+        # 6. Gracefully stop recording of Bag 1
+        self.stop_bag_recording()
 
-        self.execute_step(20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "SPLIT LOGS NOW! (Waiting 20s...)")
+        self.get_logger().warn("\n" + "!"*65)
+        self.get_logger().warn(" AUTOMATIC SPLIT: Stop Bag 1 complete.")
+        self.get_logger().warn(" Preparing transition to MANUAL Mode (Wait 15s)...")
+        self.get_logger().warn("!"*65 + "\n")
 
-        # 6. Establish MANUAL Mode for orientation parameters
+        self.execute_step(15.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Transition Settle Window")
+
+        # 7. Establish MANUAL Mode for orientation parameters
         if not self.set_flight_mode('MANUAL'):
             return
 
-        # 7. Phase D Manual sweeps
+        # 8. Start automatic recording of Bag 2
+        self.start_bag_recording("bag_manual")
+        self.execute_step(5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Bag 2 Baseline Orientation Capture")
+
+        # 9. Phase D Manual sweeps
         for step in self.manual_pass:
             duration, surge, sway, heave, roll, pitch, yaw, mode, label = step
             self.execute_step(duration, surge, sway, heave, roll, pitch, yaw, label)
 
-        # 8. Clean up and Disarm
+        # 10. Gracefully stop recording of Bag 2
+        self.stop_bag_recording()
+
+        # 11. Clean up and Disarm
         self.execute_step(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Stopping Thrusters")
         self.set_arm_state(False)
 
         self.get_logger().info("=========================================================")
-        self.get_logger().info(" TEST COMPLETE. Safe to turn off recording and secure sub.")
+        self.get_logger().info(" TEST COMPLETE. Safe to retrieve vehicle.")
+        self.get_logger().info(" Bag 1 (bag_alt_hold) & Bag 2 (bag_manual) recorded successfully.")
         self.get_logger().info("=========================================================")
 
 def main(args=None):
@@ -247,27 +301,23 @@ def main(args=None):
         executor.spin()
 
     except KeyboardInterrupt:
-        try:
-            if rclpy.ok():
-
-                node.current_cmd.surge = 0.0
-                node.current_cmd.sway = 0.0
-                node.current_cmd.heave = 0.0
-                node.current_cmd.roll = 0.0
-                node.current_cmd.pitch = 0.0
-                node.current_cmd.yaw = 0.0
-
-                node.publish_current_command()
-
-                req = SetBool.Request()
-                req.data = False
-
-                future = node.arm_client.call_async(req)
-
-        except Exception as e:
-            print(f"Shutdown cleanup failed: {e}")
-
+        node.get_logger().warn("Interrupted! Emergency stop and automatic cleanup initiated...")
     finally:
+        # Ensure we kill the recording process and disarm the sub safely during sudden stop
+        node.stop_bag_recording()
+        node.current_cmd.surge = 0.0
+        node.current_cmd.sway = 0.0
+        node.current_cmd.heave = 0.0
+        node.current_cmd.roll = 0.0
+        node.current_cmd.pitch = 0.0
+        node.current_cmd.yaw = 0.0
+        node.publish_current_command()
+        
+        # Synchronous direct disarm call during sudden termination
+        req = SetBool.Request()
+        req.data = False
+        node.arm_client.call(req)
+        
         node.destroy_node()
         rclpy.shutdown()
 

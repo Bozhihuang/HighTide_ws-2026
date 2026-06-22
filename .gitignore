@@ -30,3 +30,6 @@ Thumbs.db
 *.db3
 
 ekf_debug.txt
+bag_alt_hold
+bag_manual
+
