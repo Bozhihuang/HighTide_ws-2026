@@ -1,185 +1,229 @@
 #!/usr/bin/env python3
-"""
-RoboSub Streamlined U-Turn Prequalification Run (Rulebook Section 3.4.1.2)
 
-Maneuver Steps:
-  1. Submerge 3m behind the Gate down to 1.0 meter.
-  2. Waypoint 1: Surge 13.5m straight forward (passing left of the marker).
-  3. Waypoint 2A: STOP at the end line and pivot the nose 90 degrees Right in place.
-  4. Waypoint 2B: Drive 3.0m straight across the back of the marker pole.
-  5. Waypoint 3A: STOP on the right side and pivot another 90 degrees Right (facing home).
-  6. Waypoint 3B: Surge straight home through the Gate to the absolute origin.
-  7. Surface and disarm safely.
-"""
-
-import math
-import time
 import rclpy
 from rclpy.node import Node
-from rclpy.action import ActionClient
-from std_srvs.srv import SetBool, Trigger
-from std_msgs.msg import Float64
-from nav_msgs.msg import Odometry
-from hightide_interfaces.action import NavigateToWaypoint
+from sensor_msgs.msg import Imu
+from mavros_msgs.msg import OverrideRCIn
+from mavros_msgs.srv import CommandBool, SetMode
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+import math
+import time
 
-class PrequalificationRun(Node):
+
+class ArcReturnManeuver(Node):
     def __init__(self):
-        super().__init__('prequalification_run')
-        
-        # Service & Action Clients
-        self.arm_cli = self.create_client(SetBool, '/hightide/arm')
-        self.alt_hold_cli = self.create_client(Trigger, '/hightide/set_alt_hold')
-        self.depth_pub = self.create_publisher(Float64, '/hightide/target_depth', 10)
-        self.nav_client = ActionClient(self, NavigateToWaypoint, '/hightide/navigate_to_waypoint')
-        
-        # Subscriptions
-        self.create_subscription(Odometry, '/odometry/filtered', self._odom_cb, 10)
-        self.current_pose = None
-        
-        self.get_logger().info('Connecting to flight control networks...')
-        self.arm_cli.wait_for_service()
-        self.alt_hold_cli.wait_for_service()
-        self.nav_client.wait_for_server()
+        super().__init__('arc_return_maneuver')
+        self.get_logger().info("Waiting 30 seconds before arming and starting...")
+        time.sleep(20)
 
-    def _odom_cb(self, msg):
-        self.current_pose = msg.pose.pose
+        # MAVROS
+        self.arm_client = self.create_client(CommandBool, '/mavros/cmd/arming')
+        self.mode_client = self.create_client(SetMode, '/mavros/set_mode')
 
-    def _quaternion_to_yaw(self, q):
-        """Extracts Euler yaw from global state orientation quaternion."""
-        siny_cosp = 2 * (q.w * q.z + q.x * q.y)
-        cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
-        return math.atan2(siny_cosp, cosy_cosp)
+        self.arm_client.wait_for_service()
+        self.mode_client.wait_for_service()
 
-    def _yaw_to_quaternion(self, yaw):
-        """Converts an Euler angle heading target into a spatial Quaternion."""
-        from geometry_msgs.msg import Quaternion
-        return Quaternion(
-            x=0.0,
-            y=0.0,
-            z=math.sin(yaw / 2.0),
-            w=math.cos(yaw / 2.0)
+        # IMU
+        qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
         )
 
-    def move_to(self, x, y, yaw_target):
-        """Dispatches a waypoint goal to the action server."""
-        goal = NavigateToWaypoint.Goal()
-        goal.target_pose.pose.position.x = x
-        goal.target_pose.pose.position.y = y
-        goal.target_pose.pose.orientation = self._yaw_to_quaternion(yaw_target)
-        
-        self.get_logger().info(
-            f'Sending Waypoint Target -> X: {x:.2f}, Y: {y:.2f}, Heading: {math.degrees(yaw_target):.1f}°'
+        self.imu_sub = self.create_subscription(
+            Imu,
+            '/mavros/imu/data',
+            self.imu_cb,
+            qos
         )
+
+        # RC
+        self.rc_pub = self.create_publisher(
+            OverrideRCIn,
+            '/mavros/rc/override',
+            10
+        )
+
+        # state
+        self.current_heading = 0.0
+        self.initial_heading = None
+        self.target_heading = None
+
+        self.state = "FORWARD1"
+        self.state_start_time = time.time()
+
+        self.kp = 0.8
+
+        self.set_mode("ALT_HOLD")
+        self.arm(True)
         
-        future = self.nav_client.send_goal_async(goal)
+
+        self.timer = self.create_timer(0.1, self.control_loop)
+
+    # ---------------- MAVROS ----------------
+
+    def set_mode(self, mode):
+        req = SetMode.Request()
+        req.custom_mode = mode
+        future = self.mode_client.call_async(req)
         rclpy.spin_until_future_complete(self, future)
-        goal_handle = future.result()
-        
-        if not goal_handle.accepted:
-            self.get_logger().error('Waypoint navigation goal rejected by server node!')
-            return False
-            
-        result_future = goal_handle.get_result_async()
-        rclpy.spin_until_future_complete(self, result_future)
-        return result_future.result().result.success
 
-    def execute_mission(self):
-        self.get_logger().info('=== STARTING HIGH-TIDE SQUARE PREQUALIFICATION ===')
-        
-        while self.current_pose is None:
-            self.get_logger().info('Waiting for EKF localization lock...')
-            rclpy.spin_once(self, timeout_sec=1.0)
-            
-        input("\n[!] Position vehicle 3m behind Gate, offset LEFT of Marker. Press Enter to DEPLOY...")
-        
-        # 1. Arm and Submerge below surface limits
-        self.get_logger().info('Arming electronic speed controllers...')
-        req = SetBool.Request()
-        req.data = True
-        self.arm_cli.call_async(req)
-        time.sleep(1.0)
-        
-        self.get_logger().info('Engaging Alt-Hold mode...')
-        self.alt_hold_cli.call_async(Trigger.Request())
-        time.sleep(1.0)
-        
-        self.get_logger().info('Descending to 1.0 meter...')
-        depth_msg = Float64()
-        depth_msg.data = 1.0
-        self.depth_pub.publish(depth_msg)
-        time.sleep(6.0)  
-        
-        # 2. Establish spatial coordinate anchors based on deployment setup
-        start_x = self.current_pose.position.x
-        start_y = self.current_pose.position.y
-        init_yaw = self._quaternion_to_yaw(self.current_pose.orientation)
-        
-        cos_f = math.cos(init_yaw)
-        sin_f = math.sin(init_yaw)
-        cos_r = math.cos(init_yaw - math.pi / 2.0)
-        sin_r = math.sin(init_yaw - math.pi / 2.0)
-        
-        # Headings definitions
-        heading_forward = init_yaw
-        heading_right = normalize_angle(init_yaw - math.pi / 2.0)
-        heading_home = normalize_angle(init_yaw + math.pi)
+    def arm(self, value):
+        req = CommandBool.Request()
+        req.value = value
+        future = self.arm_client.call_async(req)
+        rclpy.spin_until_future_complete(self, future)
 
-        # 3. WAYPOINT 1: Outbound Pass (13.5m straight out from starting line)
-        self.get_logger().info('>>> PHASE 1: Surging Outbound Left of Marker...')
-        wp1_x = start_x + (13.5 * cos_f)
-        wp1_y = start_y + (13.5 * sin_f)
-        self.move_to(wp1_x, wp1_y, heading_forward)
-        
-        # 4. WAYPOINT 2A: Pivot-in-Place Right
-        # Holds current position, turns nose 90 degrees right to face parallel to gate
-        self.get_logger().info('>>> PHASE 2A: Pivoting 90° Right in place...')
-        self.move_to(wp1_x, wp1_y, heading_right)
-        time.sleep(1.0) # Small buffer to allow heading to completely settle
+    # ---------------- IMU ----------------
 
-        # wp2
-        self.get_logger().info('go 2 metre straigt paralel to gate and behind marker')
-        wp2_x = wp1_x + (2.0 * cos_r)
-        wp2_y = wp1_y + (2.0 * sin_r)
-        self.move_to(wp2_x, wp2_y, heading_right)
-        
-        # turn2
-        self.get_logger().info('pivot 90deg')
-        self.move_to(wp2_x, wp2_y, heading_home)
-        time.sleep(1.0)
+    def imu_cb(self, msg):
+        q = msg.orientation
 
-        # 7. wp3
-        self.get_logger().info('>>> PHASE 3B: Surging Home Forward Through Gate...')
-        self.move_to(start_x, start_y, heading_home)
-        
-        # 8. Safety Surface & Disarm sequence
-        self.get_logger().info('Maneuver loop finished! Ascending to surface...')
-        depth_msg.data = 0.0
-        self.depth_pub.publish(depth_msg)
-        time.sleep(5.0)
-        
-        self.get_logger().info('Disarming propulsion arrays...')
-        req.data = False
-        self.arm_cli.call_async(req)
-        self.get_logger().info('=== PREQUALIFICATION MANEUVER EXECUTED SUCCESSFULLY ===')
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
 
-def main(args=None):
-    rclpy.init(args=args)
-    node = PrequalificationRun()
+        yaw = math.atan2(siny_cosp, cosy_cosp)
+        self.current_heading = math.degrees(yaw) % 360.0
+
+        if self.initial_heading is None:
+            self.initial_heading = self.current_heading
+            self.target_heading = self.current_heading
+
+            self.get_logger().info(
+                f"Initial heading: {self.initial_heading:.1f}°"
+            )
+
+    # ---------------- HELPERS ----------------
+
+    def heading_error(self, target, current):
+        err = target - current
+        if err > 180:
+            err -= 360
+        if err < -180:
+            err += 360
+        return err
+
+    # ---------------- CONTROL ----------------
+
+    def control_loop(self):
+        now = time.time()
+        elapsed = now - self.state_start_time
+
+        rc = OverrideRCIn()
+        rc.channels = [65535] * 18
+
+        rc.channels[0] = 1500
+        rc.channels[1] = 1500
+        rc.channels[2] = 1500
+        rc.channels[5] = 1500
+
+        yaw_pwm = 1500
+
+        # heading hold
+        if self.target_heading is not None:
+            err = self.heading_error(self.target_heading, self.current_heading)
+            yaw_pwm = int(1500 + self.kp * err)
+            yaw_pwm = max(1400, min(1600, yaw_pwm))
+
+        # ---------------- STATES ----------------
+
+        if self.state == "FORWARD1":
+            rc.channels[3] = yaw_pwm
+            rc.channels[4] = 1600
+
+            if elapsed >= 30.0:
+                self.state = "TURN1A"
+                self.state_start_time = now
+                self.get_logger().info("TURN1A start")
+
+        elif self.state == "TURN1A":
+            rc.channels[3] = 1400      # CCW yaw
+            rc.channels[4] = 1525      # slight surge
+
+            if elapsed >= 2.6:
+                self.state = "STRAIGHT_MID"
+                self.state_start_time = now
+                self.target_heading = self.current_heading
+
+                self.get_logger().info(
+                    f"TURN1A done, heading locked at "
+                    f"{self.target_heading:.1f}°"
+                )
+
+        elif self.state == "STRAIGHT_MID":
+            rc.channels[3] = yaw_pwm
+            rc.channels[4] = 1600
+
+            if elapsed >= 3.0:
+                self.state = "TURN1B"
+                self.state_start_time = now
+                self.get_logger().info("TURN1B start")
+
+        elif self.state == "TURN1B":
+            rc.channels[3] = 1400      # CCW yaw
+            rc.channels[4] = 1525      # slight surge
+
+            if elapsed >= 2.9:
+                self.state = "FORWARD2"
+                self.state_start_time = now
+
+                self.target_heading = self.current_heading
+
+                self.get_logger().info(
+                    f"TURN1B done, heading locked at "
+                    f"{self.target_heading:.1f}°"
+                )
+
+        elif self.state == "FORWARD2":
+            rc.channels[3] = yaw_pwm
+            rc.channels[4] = 1600
+
+            if elapsed >= 21.0:
+                self.state = "TURN2"
+                self.state_start_time = now
+
+                self.get_logger().info("TURN2 start")
+        elif self.state == "TURN2":
+            # same CCW yaw as first turn
+            rc.channels[3] = 1400
+            rc.channels[4] = 1525
+
+            if elapsed >= 1.35:
+                self.state = "FORWARD3"
+                self.state_start_time = now
+
+                self.target_heading = self.current_heading
+
+                self.get_logger().info(
+                    f"TURN2 done, heading locked at "
+                    f"{self.target_heading:.1f}°"
+                )
+        elif self.state == "FORWARD3":
+            rc.channels[3] = yaw_pwm
+            rc.channels[4] = 1600
+
+            if elapsed >= 30.0:
+                self.state = "STOP"
+
+        else:
+            rc.channels[3] = 1500
+            rc.channels[4] = 1500
+
+        self.rc_pub.publish(rc)
+
+
+def main():
+    rclpy.init()
+    node = ArcReturnManeuver()
+
     try:
-        node.execute_mission()
+        rclpy.spin(node)
     except KeyboardInterrupt:
-        node.get_logger().warn('EMERGENCY MANUAL INTERRUPT! Forcing immediate float...')
-        depth_msg = Float64()
-        depth_msg.data = 0.0
-        node.depth_pub.publish(depth_msg)
+        node.get_logger().info("Stopping...")
     finally:
         node.destroy_node()
         rclpy.shutdown()
 
-def normalize_angle(angle: float) -> float:
-    while angle > math.pi:  angle -= 2 * math.pi
-    while angle < -math.pi: angle += 2 * math.pi
-    return angle
 
 if __name__ == '__main__':
     main()

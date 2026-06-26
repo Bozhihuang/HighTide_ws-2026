@@ -75,7 +75,7 @@ class MissionNode(Node):
             DetectionArray, '/hightide/tracked_targets',
             self._detections_cb, 10)
         self.create_subscription(
-            Odometry, '/hightide/odometry/filtered',
+            Odometry, '/hightide/mavros/local_position/odom',
             self._odom_cb, 10)
         self.create_subscription(
             Float64, '/mavros/global_position/rel_alt',

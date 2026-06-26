@@ -8,6 +8,7 @@ from nav_msgs.msg import Odometry
 from hightide_interfaces.msg import ThrusterCommand
 from hightide_interfaces.action import NavigateToWaypoint
 from hightide_navigation import PIDController, normalize_angle, quaternion_to_yaw
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 
 class WaypointNavigatorNode(Node):
@@ -15,6 +16,11 @@ class WaypointNavigatorNode(Node):
 
     def __init__(self):
         super().__init__('waypoint_navigator_node')
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
 
         self.declare_parameter('surge_kp', 0.0)
         self.declare_parameter('surge_ki', 0.0)
@@ -51,8 +57,8 @@ class WaypointNavigatorNode(Node):
         self.last_time = self.get_clock().now()
 
         self.odom_sub = self.create_subscription(
-            Odometry, '/odometry/filtered',
-            self._odom_callback, 10)
+            Odometry, '/mavros/local_position/odom',
+            self._odom_callback, sensor_qos)
         self.cmd_pub = self.create_publisher(ThrusterCommand, '/hightide/cmd_vel', 10)
 
         self._action_server = ActionServer(

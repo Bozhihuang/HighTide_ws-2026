@@ -13,13 +13,18 @@ from rclpy.node import Node
 from nav_msgs.msg import Odometry
 from hightide_interfaces.msg import ThrusterCommand, DetectionArray
 from hightide_navigation import PIDController, normalize_angle, quaternion_to_yaw 
-
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 class SearchPatternNode(Node):
     """Executes systematic search patterns to find competition objects."""
 
     def __init__(self):
         super().__init__('search_pattern_node')
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
 
         self.declare_parameter('pattern_type', 'expanding_square')
         self.declare_parameter('leg_length_m', 0.0)
@@ -50,7 +55,7 @@ class SearchPatternNode(Node):
         )
 
         self.odom_sub = self.create_subscription(
-            Odometry, '/odometry/filtered', self._odom_callback, 10)
+            Odometry, '/mavros/local_position/odom', self._odom_callback, sensor_qos)
         self.det_sub = self.create_subscription(
             DetectionArray, '/hightide/tracked_targets', self._det_callback, 10)
         self.cmd_pub = self.create_publisher(ThrusterCommand, '/hightide/cmd_vel', 10)

@@ -26,7 +26,7 @@ class SensorsPoolTest(Node):
         )
         
         # Subscriptions
-        self.create_subscription(Odometry, '/odometry/filtered', self._ekf_odom_cb, 10)
+        self.create_subscription(Odometry, '/mavros/local_position/odom', self._ekf_odom_cb, sensor_qos)
         self.create_subscription(AccelWithCovarianceStamped, '/accel/filtered', self._ekf_accel_cb, 10)
         self.create_subscription(Imu, '/mavros/imu/data', self._imu_cb, sensor_qos)
         
