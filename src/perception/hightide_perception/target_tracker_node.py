@@ -24,7 +24,8 @@ from hightide_perception import CLASS_NAMES
 
 
 class TrackedTarget:
-
+# this is a tracked target object that stores all the raw detection info but cleaner(the bbox is smoothed),
+# with the addition of a track_id and last_seen time, and a hit_count 
     def __init__(self, detection: Detection, track_id: int):
         self.track_id = track_id
         self.class_id = detection.class_id
@@ -44,7 +45,8 @@ class TrackedTarget:
         """Update tracked target with new detection using EMA smoothing."""
         self.confidence = detection.confidence
         # Exponential moving average on bbox
-        # Alpha is the smoothing factor, higher alpha means more weight to new detection when calculating the average
+        # Alpha is the smoothing factor,
+        # higher alpha means more weight to new detection when calculating the average
         self.bbox[0] = alpha * detection.x_min + (1 - alpha) * self.bbox[0]
         self.bbox[1] = alpha * detection.y_min + (1 - alpha) * self.bbox[1]
         self.bbox[2] = alpha * detection.x_max + (1 - alpha) * self.bbox[2]
@@ -58,8 +60,7 @@ class TrackedTarget:
 
 
 class TargetTrackerNode(Node):
-    """IoU-based multi-object tracker with depth augmentation from ZED."""
-
+    # target tracker node essentially cleans raw detections info tracked targets, smooths depth and bbox, removes bad data
     def __init__(self):
         super().__init__('target_tracker_node')
 
@@ -155,7 +156,6 @@ class TargetTrackerNode(Node):
             self.get_logger().warn(f'Depth conversion error: {e}')
 
     def _detection_callback(self, msg: DetectionArray):
-        """Match detections to existing tracks, update, and publish."""
         now = pytime.time()
 
         # identify stale tracks (things were tracking that haven't been seen for a while)
@@ -168,34 +168,46 @@ class TargetTrackerNode(Node):
 
         # Match new detections to existing tracks
         new_dets = list(msg.detections)
+        # set that will contain the track ids that have been matched to a new detection (not being in the list means the track is stale)
         matched_track_ids = set()
+        # set that will contain index of new detections that were matched to existing tracks (not being in the list means it is a new object being tracked)
         matched_det_ids = set()
 
         for det_idx, det in enumerate(new_dets):
             det_box = [det.x_min, det.y_min, det.x_max, det.y_max]
+            # these 2 are used to track the best match for this new detection(if we find one) to an existing track
             best_iou = 0.0
             best_tid = None
-
+            # for every new detection check all of the tracks to see if it is the same object as one of them,
+            # this is based on IoU and class_id, if it is the same object, update the track with the new detection info
             for tid, track in self.tracks.items():
+                # if not the same class or we already matched this track to a new detection skip it
                 if tid in matched_track_ids:
                     continue
                 if track.class_id != det.class_id:
                     continue
                 iou = self._compute_iou(det_box, track.bbox)
+                # take the track with most overlap with the new detection,
+                
                 if iou > best_iou:
                     best_iou = iou
                     best_tid = tid
-
+            # if the best match has an IoU above the IoU threshold,
+            #  we will update that track with the new detection info
             if best_iou >= self.iou_thresh and best_tid is not None:
                 self.tracks[best_tid].update(det)
+                # add track id and detection index to the matched sets
                 matched_track_ids.add(best_tid)
                 matched_det_ids.add(det_idx)
 
         # Create new tracks for unmatched detections
         for det_idx, det in enumerate(new_dets):
             if det_idx not in matched_det_ids:
+                # init new track with the new detection and assign it a new track id
                 track = TrackedTarget(det, self.next_track_id)
+                # add the new track to the dictionary
                 self.tracks[self.next_track_id] = track
+                # increment the next track id for the next new track
                 self.next_track_id += 1
 
         # Add depth to all active tracks
@@ -203,16 +215,22 @@ class TargetTrackerNode(Node):
             depth = self._sample_depth(track.center_x, track.center_y)
             if depth > 0:
                 if track.depth_m > 0:
-                    track.depth_m = 0.7 * track.depth_m + 0.3 * depth  # EMA
+                    # EMA: similar weighted blending to temporal filtering,
+                    # but weights are different (0.7 to old depth, 0.3 to new depth)
+                    track.depth_m = 0.7 * track.depth_m + 0.3 * depth  
+                    # this prevent the depth value from jumping around too much
                 else:
                     track.depth_m = depth
 
-        # Publish tracked targets
+        # Publish tracked targets, follows DetectionArray.msg format,
+        # but detection[] is a list of tracked targets instead of raw detections
         out_msg = DetectionArray()
         out_msg.header = msg.header
         out_msg.image_width = msg.image_width
         out_msg.image_height = msg.image_height
 
+        # fill out the detection[] list with the tracked targets,
+        # look at detection.msg for more on the fields of each detection
         for track in self.tracks.values():
             det = Detection()
             det.header = msg.header
