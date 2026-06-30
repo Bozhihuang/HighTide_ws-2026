@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-"""
-Target Tracker Node — IoU-based tracking with ZED depth augmentation.
 
-Matches detections across frames using IoU, adds depth from ZED depth map,
-and maintains smoothed bounding boxes with temporal filtering.
-"""
+
+
+
+# IoU: Intersection over Union: Way to measure overlap between two bounding boxes.
+#   Divides the area of intersection by the area of union, giving a value between 0 and 1.
+#   larger IoU = more overlap.
+
+# IoU threshold: Minimum IoU required to consider two detections the same object across frames.
+
+# Temporal filtering: Smooths bounding box coordinates and confidence scores over time to reduce jitter.
+#   Works by doing a weighted average of the current detection andprevious detections of the same object.
+#   This makes it so that the bounding box doesn't jump between frames and smoothly moves to new position.
 
 import numpy as np
 import time as pytime
@@ -17,7 +24,6 @@ from hightide_perception import CLASS_NAMES
 
 
 class TrackedTarget:
-    """A single tracked target across frames."""
 
     def __init__(self, detection: Detection, track_id: int):
         self.track_id = track_id
@@ -30,18 +36,23 @@ class TrackedTarget:
         self.center_y = detection.center_y
         self.depth_m = -1.0
         self.last_seen = pytime.time()
-        self.hit_count = 1
+        self.hit_count = 1 # number of frames this target has been detected as something
 
-    def update(self, detection: Detection, alpha=0.3):
+
+    # gets called when we are sure we are getting a new detection of same target
+    def update(self, detection: Detection, alpha=0.3): 
         """Update tracked target with new detection using EMA smoothing."""
         self.confidence = detection.confidence
         # Exponential moving average on bbox
+        # Alpha is the smoothing factor, higher alpha means more weight to new detection when calculating the average
         self.bbox[0] = alpha * detection.x_min + (1 - alpha) * self.bbox[0]
         self.bbox[1] = alpha * detection.y_min + (1 - alpha) * self.bbox[1]
         self.bbox[2] = alpha * detection.x_max + (1 - alpha) * self.bbox[2]
         self.bbox[3] = alpha * detection.y_max + (1 - alpha) * self.bbox[3]
+        # update center coordinates based on new bounding box
         self.center_x = (self.bbox[0] + self.bbox[2]) / 2.0
         self.center_y = (self.bbox[1] + self.bbox[3]) / 2.0
+        # update last seen time and hit count
         self.last_seen = pytime.time()
         self.hit_count += 1
 
@@ -52,20 +63,24 @@ class TargetTrackerNode(Node):
     def __init__(self):
         super().__init__('target_tracker_node')
 
+
+        # Default parameters 
         self.declare_parameter('max_tracking_age', 1.0)
         self.declare_parameter('iou_threshold', 0.3)
         self.declare_parameter('depth_sample_radius', 5)
 
+        # override parameters with whats in launch file if specially defined
         self.max_age = self.get_parameter('max_tracking_age').value
         self.iou_thresh = self.get_parameter('iou_threshold').value
         self.depth_radius = self.get_parameter('depth_sample_radius').value
 
-        self.bridge = CvBridge()
-        self.tracks: dict[int, TrackedTarget] = {}
+        self.bridge = CvBridge() # bridge that will convert depth img format
+        # initialize empty dictionary assigning track_id int to TrackedTarget object
+        self.tracks: dict[int, TrackedTarget] = {} 
         self.next_track_id = 0
         self.depth_image = None
 
-        # Subscribers
+        # Subscribers to get raw detections and depth 
         self.det_sub = self.create_subscription(
             DetectionArray, '/hightide/detections',
             self._detection_callback, 10)
@@ -73,55 +88,68 @@ class TargetTrackerNode(Node):
             Image, '/mavros/zed/depth/depth_registered',
             self._depth_callback, 5)
 
-        # Publisher
+        # Publisher for polished detections data with depth and tracking info
         self.tracked_pub = self.create_publisher(
             DetectionArray, '/hightide/tracked_targets', 10)
 
         self.get_logger().info('Target Tracker Node started')
 
-    @staticmethod
+    @staticmethod # static method because it doesn't need any instance variables
     def _compute_iou(box_a, box_b):
-        """Compute IoU between two [x1,y1,x2,y2] boxes."""
+        # Compute IoU between two bounding boxes
         x1 = max(box_a[0], box_b[0])
         y1 = max(box_a[1], box_b[1])
         x2 = min(box_a[2], box_b[2])
         y2 = min(box_a[3], box_b[3])
 
-        inter = max(0, x2 - x1) * max(0, y2 - y1)
+        inter = max(0, x2 - x1) * max(0, y2 - y1) # computing area of intersection
         area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
         area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
-        union = area_a + area_b - inter
+        union = area_a + area_b - inter # computing area of union
 
         return inter / union if union > 0 else 0.0
 
     def _sample_depth(self, cx: float, cy: float) -> float:
-        """Sample depth from ZED depth map at given pixel coordinates."""
+        # Sample depth from ZED depth map at given pixel coordinates.
+        # Any errors return -1.0, otherwise return depth in meters.
+
         if self.depth_image is None:
-            return -1.0
+            return -1.0 # if we get a detection that is outside the image, return -1.0
 
         h, w = self.depth_image.shape[:2]
-        cx_int, cy_int = int(cx), int(cy)
+        cx_int, cy_int = int(cx), int(cy) # center x and y values as int
 
         if cx_int < 0 or cx_int >= w or cy_int < 0 or cy_int >= h:
-            return -1.0
+            return -1.0 # if we get a detection that is outside the image, return -1.0
+
 
         r = self.depth_radius
         y_start = max(0, cy_int - r)
         y_end = min(h, cy_int + r + 1)
         x_start = max(0, cx_int - r)
         x_end = min(w, cx_int + r + 1)
+        # makes a square patch around the center of the bounding box,
+        # with square size having radius r determined by depth_radius parameter
 
-        patch = self.depth_image[y_start:y_end, x_start:x_end]
+        patch = self.depth_image[y_start:y_end, x_start:x_end]   
         valid = patch[np.isfinite(patch) & (patch > 0.0)]
+        # samples depth values in the square patch,
+        # and filters for only valid depth values (finite and greater than 0.0)
 
-        if len(valid) == 0:
+
+        if len(valid) == 0: 
             return -1.0
+        # if there are no valid depth values in the patch, return -1.0
 
-        return float(np.median(valid))
+        return float(np.median(valid)) 
+        # returns the median of the valid depth values in the patch,
 
     def _depth_callback(self, msg: Image):
-        """Store latest depth image."""
         try:
+            # convert depth image to a 2d array of float32 values in meters and store it
+            # (distance from camera to each pixel in og image)
+            # C1 means 1 channel (color range), this makes it like a grayscale image
+            # (also has 1 channel but instead of brightness, it is based on depth)
             self.depth_image = self.bridge.imgmsg_to_cv2(msg, '32FC1')
         except Exception as e:
             self.get_logger().warn(f'Depth conversion error: {e}')
@@ -130,10 +158,12 @@ class TargetTrackerNode(Node):
         """Match detections to existing tracks, update, and publish."""
         now = pytime.time()
 
-        # Remove stale tracks
+        # identify stale tracks (things were tracking that haven't been seen for a while)
         stale_ids = [tid for tid, t in self.tracks.items()
                      if (now - t.last_seen) > self.max_age]
-        for tid in stale_ids:
+        
+        #delete stale tracks from the dictionary of tracks
+        for tid in stale_ids: 
             del self.tracks[tid]
 
         # Match new detections to existing tracks
