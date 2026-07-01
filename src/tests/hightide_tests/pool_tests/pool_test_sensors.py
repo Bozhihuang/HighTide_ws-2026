@@ -2,7 +2,7 @@
 """
 Pool Test: Sensors (ZED + FOG) - FULL DIAGNOSTIC MODE
 
-Live monitors the EKF filtered odometry, acceleration, and raw FOG IMU.
+Live monitors the raw ZED odometry, acceleration, and raw FOG IMU.
 Displays Position, Velocity, Acceleration, and converts heading to NED
 (North=0, East=90, South=180, West=270).
 """
@@ -26,25 +26,25 @@ class SensorsPoolTest(Node):
         )
         
         # Subscriptions
-        self.create_subscription(Odometry, '/mavros/local_position/odom', self._ekf_odom_cb, sensor_qos)
+
+        self.create_subscription(Odometry, '/mavros/zed/odom', self._zed_odom_cb, sensor_qos)
         self.create_subscription(AccelWithCovarianceStamped, '/accel/filtered', self._ekf_accel_cb, 10)
         self.create_subscription(Imu, '/mavros/imu/data', self._imu_cb, sensor_qos)
         
         # State Variables
-        self.ekf_x = 0.0
-        self.ekf_y = 0.0
-        self.ekf_z = 0.0
+        self.zed_x = 0.0
+        self.zed_y = 0.0
+        self.zed_z = 0.0
         
-        self.ekf_vx = 0.0
-        self.ekf_vy = 0.0
-        self.ekf_vz = 0.0
-        self.ekf_vyaw = 0.0
+        self.zed_vx = 0.0
+        self.zed_vy = 0.0
+        self.zed_vz = 0.0
+        self.zed_vyaw = 0.0
         
         self.ekf_ax = 0.0
         self.ekf_ay = 0.0
         self.ekf_az = 0.0
         
-        self.ekf_yaw_enu = 0.0
         self.fog_yaw_enu = 0.0
         
         self.timer = self.create_timer(1.0, self._print_status)
@@ -52,20 +52,17 @@ class SensorsPoolTest(Node):
         self.get_logger().info('Push the sub to verify tracking. Check for lag or jitter.')
         self.get_logger().info('Press Ctrl+C to exit.')
 
-    def _ekf_odom_cb(self, msg):
-        # Position
-        self.ekf_x = msg.pose.pose.position.x
-        self.ekf_y = msg.pose.pose.position.y
-        self.ekf_z = msg.pose.pose.position.z
+    def _zed_odom_cb(self, msg):
+        # Position from ZED
+        self.zed_x = msg.pose.pose.position.x
+        self.zed_y = msg.pose.pose.position.y
+        self.zed_z = msg.pose.pose.position.z
         
-        # Linear and Angular Velocity
-        self.ekf_vx = msg.twist.twist.linear.x
-        self.ekf_vy = msg.twist.twist.linear.y
-        self.ekf_vz = msg.twist.twist.linear.z
-        self.ekf_vyaw = msg.twist.twist.angular.z
-        
-        # Orientation
-        self.ekf_yaw_enu = self._quat_to_yaw(msg.pose.pose.orientation)
+        # Linear and Angular Velocity from ZED
+        self.zed_vx = msg.twist.twist.linear.x
+        self.zed_vy = msg.twist.twist.linear.y
+        self.zed_vz = msg.twist.twist.linear.z
+        self.zed_vyaw = msg.twist.twist.angular.z
 
     def _ekf_accel_cb(self, msg):
         # Acceleration from robot_localization
@@ -74,6 +71,7 @@ class SensorsPoolTest(Node):
         self.ekf_az = msg.accel.accel.linear.z
 
     def _imu_cb(self, msg):
+        # Sourcing heading entirely from the IMU topic
         self.fog_yaw_enu = self._quat_to_yaw(msg.orientation)
 
     def _quat_to_yaw(self, q):
@@ -89,14 +87,14 @@ class SensorsPoolTest(Node):
         return ned_deg
 
     def _print_status(self):
-        # Convert to NED
-        ekf_ned = self._enu_to_ned_deg(self.ekf_yaw_enu)        
+        # Convert the IMU/FOG heading to NED degrees
+        fog_ned = self._enu_to_ned_deg(self.fog_yaw_enu)        
         print("\033[H\033[J", end="") # Clears the terminal screen for a clean live-dashboard
-        print(f"m      : X={self.ekf_x:+.4f} | Y={self.ekf_y:+.4f} | Z={self.ekf_z:+.4f}")
-        print(f"m/s    : vX={self.ekf_vx:+.4f} | vY={self.ekf_vy:+.4f} | vZ={self.ekf_vz:+.4f}")
+        print(f"m      : X={self.zed_x:+.4f} | Y={self.zed_y:+.4f} | Z={self.zed_z:+.4f}")
+        print(f"m/s    : vX={self.zed_vx:+.4f} | vY={self.zed_vy:+.4f} | vZ={self.zed_vz:+.4f}")
         print(f"m/s^2  : aX={self.ekf_ax:+.4f} | aY={self.ekf_ay:+.4f} | aZ={self.ekf_az:+.4f}")
         print("---------------------------------------------------------")
-        print(f"heading: {ekf_ned:05.4f}°  |  turn rate: {math.degrees(self.ekf_vyaw):+.4f}°/s")        
+        print(f"heading: {fog_ned:05.4f}°  |  turn rate: {math.degrees(self.zed_vyaw):+.4f}°/s")        
         
 
 def main(args=None):

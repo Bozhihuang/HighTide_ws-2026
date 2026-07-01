@@ -135,7 +135,7 @@ class SystemIDExciter(Node):
                 self.get_logger().info(f"Starting automatic bag recording: {bag_name}")
                 # Log cmd_vel, MAVROS local odometry, and raw RC overrides for MATLAB
                 self.bag_process = subprocess.Popen(
-                    ['ros2', 'bag', 'record', '-o', bag_name, '/mavros/local_position/odom', '/hightide/cmd_vel', '/mavros/rc/override']
+                    ['ros2', 'bag', 'record', '-o', bag_name, '/mavros/zed/odom', '/hightide/cmd_vel', '/mavros/rc/override', '/mavros/imu/data']
                 )
             elif ticks_in_state > 60: # Give rosbag 3 seconds to fully initialize
                 self.state = 'NEXT_TEST'

@@ -5,6 +5,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionServer
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Imu
 from hightide_interfaces.msg import ThrusterCommand
 from hightide_interfaces.action import NavigateToWaypoint
 from hightide_navigation import PIDController, normalize_angle, quaternion_to_yaw
@@ -12,7 +13,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 
 class WaypointNavigatorNode(Node):
-    """Navigate to waypoints by decomposing into body-frame surge/sway."""
+    """Navigate to waypoints by decomposing into body-frame surge/sway using ZED position and IMU heading."""
 
     def __init__(self):
         super().__init__('waypoint_navigator_node')
@@ -54,21 +55,31 @@ class WaypointNavigatorNode(Node):
         self.yaw_tol = self.get_parameter('yaw_tolerance').value
 
         self.current_odom = None
+        self.current_yaw = None
         self.last_time = self.get_clock().now()
 
         self.odom_sub = self.create_subscription(
-            Odometry, '/mavros/local_position/odom',
+            Odometry, '/mavros/zed/odom',
             self._odom_callback, sensor_qos)
+            
+        # Added IMU subscription to explicitly track vehicle heading
+        self.imu_sub = self.create_subscription(
+            Imu, '/mavros/imu/data',
+            self._imu_callback, sensor_qos)
+            
         self.cmd_pub = self.create_publisher(ThrusterCommand, '/hightide/cmd_vel', 10)
 
         self._action_server = ActionServer(
             self, NavigateToWaypoint, '/hightide/navigate_to_waypoint',
             self._execute_callback)
 
-        self.get_logger().info('Waypoint Navigator Node started')
+        self.get_logger().info('Waypoint Navigator Node started with ZED odom and IMU heading configurations')
 
     def _odom_callback(self, msg):
         self.current_odom = msg
+
+    def _imu_callback(self, msg):
+        self.current_yaw = quaternion_to_yaw(msg.orientation)
 
     def _execute_callback(self, goal_handle):
         """Execute navigation to waypoint."""
@@ -97,7 +108,8 @@ class WaypointNavigatorNode(Node):
                 result.message = 'Timeout'
                 return result
 
-            if self.current_odom is None:
+            # Wait until both sensor streams have provided initial data
+            if self.current_odom is None or self.current_yaw is None:
                 rclpy.spin_once(self, timeout_sec=0.05)
                 continue
 
@@ -105,9 +117,9 @@ class WaypointNavigatorNode(Node):
             dt = (now - self.last_time).nanoseconds / 1e9
             self.last_time = now
 
-            # Current pose
+            # Current position extracted from ZED, and heading extracted from IMU data
             pos = self.current_odom.pose.pose.position
-            yaw = quaternion_to_yaw(self.current_odom.pose.pose.orientation)
+            yaw = self.current_yaw
 
             # Goal pose
             gx = goal.target_pose.pose.position.x

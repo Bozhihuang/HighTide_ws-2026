@@ -1,3 +1,6 @@
+Here is the corrected version of search_pattern_node.py that includes the _det_callback() function from your original code, while keeping the ZED position (/mavros/zed/odom) and IMU heading (/mavros/imu/data) updates intact:
+
+Python
 #!/usr/bin/env python3
 """
 Search Pattern Node — Systematic visual search when no pingers available.
@@ -11,12 +14,13 @@ import time as pytime
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Imu
 from hightide_interfaces.msg import ThrusterCommand, DetectionArray
 from hightide_navigation import PIDController, normalize_angle, quaternion_to_yaw 
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 class SearchPatternNode(Node):
-    """Executes systematic search patterns to find competition objects."""
+    """Executes systematic search patterns to find competition objects using ZED position and IMU heading."""
 
     def __init__(self):
         super().__init__('search_pattern_node')
@@ -45,6 +49,7 @@ class SearchPatternNode(Node):
         self.timeout = self.get_parameter('timeout_sec').value
 
         self.current_odom = None
+        self.current_heading = None
         self.target_found = False
         self.searching = False
 
@@ -54,8 +59,14 @@ class SearchPatternNode(Node):
             self.get_parameter('search_kd').value
         )
 
+        # Switched from /mavros/local_position/odom to /mavros/zed/odom for tracking position
         self.odom_sub = self.create_subscription(
-            Odometry, '/mavros/local_position/odom', self._odom_callback, sensor_qos)
+            Odometry, '/mavros/zed/odom', self._odom_callback, sensor_qos)
+            
+        # Added IMU subscription to explicitly track heading from /mavros/imu/data
+        self.imu_sub = self.create_subscription(
+            Imu, '/mavros/imu/data', self._imu_callback, sensor_qos)
+            
         self.det_sub = self.create_subscription(
             DetectionArray, '/hightide/tracked_targets', self._det_callback, 10)
         self.cmd_pub = self.create_publisher(ThrusterCommand, '/hightide/cmd_vel', 10)
@@ -73,6 +84,9 @@ class SearchPatternNode(Node):
 
     def _odom_callback(self, msg):
         self.current_odom = msg
+
+    def _imu_callback(self, msg):
+        self.current_heading = quaternion_to_yaw(msg.orientation)
 
     def _det_callback(self, msg: DetectionArray):
         if self.search_class and self.searching:
@@ -92,8 +106,9 @@ class SearchPatternNode(Node):
         self.searching = True
         self.target_found = False
         current_leg = self.leg_length
-        heading = quaternion_to_yaw(
-            self.current_odom.pose.pose.orientation) if self.current_odom else 0.0
+        
+        # Sourced initial heading from dedicated IMU tracking variable
+        heading = self.current_heading if self.current_heading is not None else 0.0
 
         start = pytime.time()
         turn_count = 0
@@ -123,7 +138,7 @@ class SearchPatternNode(Node):
 
     def _surge_distance(self, distance_m: float, target_heading: float) -> bool:
         """Surge forward a specific distance while maintaining heading."""
-        if self.current_odom is None:
+        if self.current_odom is None or self.current_heading is None:
             return False
 
         start_x = self.current_odom.pose.pose.position.x
@@ -132,7 +147,7 @@ class SearchPatternNode(Node):
         last_t = pytime.time()
 
         while not self.target_found:
-            if self.current_odom is None:
+            if self.current_odom is None or self.current_heading is None:
                 rclpy.spin_once(self, timeout_sec=0.05)
                 continue
 
@@ -147,9 +162,8 @@ class SearchPatternNode(Node):
             if traveled >= distance_m:
                 return True
 
-            current_heading = quaternion_to_yaw(
-                self.current_odom.pose.pose.orientation)
-            yaw_error = normalize_angle(target_heading - current_heading)
+            # Replaced odometry orientation extraction with dedicated IMU feedback variable
+            yaw_error = normalize_angle(target_heading - self.current_heading)
             yaw_cmd = self.heading_pid.compute(yaw_error, dt)
 
             cmd = ThrusterCommand()

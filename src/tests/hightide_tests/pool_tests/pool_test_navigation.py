@@ -12,7 +12,9 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 from std_srvs.srv import SetBool, Trigger
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Imu
 from hightide_interfaces.action import NavigateToWaypoint
+from hightide_navigation import quaternion_to_yaw
 
 
 class NavigationPoolTest(Node):
@@ -23,8 +25,13 @@ class NavigationPoolTest(Node):
         self.alt_hold_cli = self.create_client(Trigger, '/hightide/set_alt_hold')
         self.nav_client = ActionClient(self, NavigateToWaypoint, '/hightide/navigate_to_waypoint')
         
-        self.create_subscription(Odometry, '/mavros/local_position/odom', self._odom_cb, 10)
+        self.create_subscription(Odometry, '/mavros/zed/odom', self._odom_cb, 10)
+        
+        # Added IMU subscriber to isolate heading tracking to /mavros/imu/data
+        self.create_subscription(Imu, '/mavros/imu/data', self._imu_cb, 10)
+        
         self.current_pose = None
+        self.current_heading = None
         
         while not self.nav_client.wait_for_server(timeout_sec=1.0):
             self.get_logger().info('Waiting for waypoint navigator action server...')
@@ -32,12 +39,15 @@ class NavigationPoolTest(Node):
     def _odom_cb(self, msg):
         self.current_pose = msg.pose.pose
 
+    def _imu_cb(self, msg):
+        self.current_heading = quaternion_to_yaw(msg.orientation)
+
     def run_tests(self):
         self.get_logger().info('=== STARTING NAVIGATION POOL TEST ===')
         
-        # Wait for odometry
-        while self.current_pose is None:
-            self.get_logger().info('Waiting for odometry...')
+        # Wait for both odometry (position) and IMU (heading) data
+        while self.current_pose is None or self.current_heading is None:
+            self.get_logger().info('Waiting for sensor streams (ZED odom and IMU)...')
             rclpy.spin_once(self, timeout_sec=1.0)
             
         input("Ensure sub is in water. Press Enter to ARM and set ALT HOLD...")
@@ -64,7 +74,7 @@ class NavigationPoolTest(Node):
             
         goal = NavigateToWaypoint.Goal()
         # Transform relative to global (simplified, assumes yaw=0 for basic pool test)
-        # In a real scenario, use TF2 or calculate based on current yaw
+        # In a real scenario, use TF2 or calculate based on the explicit self.current_heading
         goal.target_x = self.current_pose.position.x + relative_x
         goal.target_y = self.current_pose.position.y + relative_y
         

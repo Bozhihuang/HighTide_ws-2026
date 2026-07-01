@@ -69,21 +69,20 @@ def generate_launch_description():
     )
 
     # ============== ZED CAMERA ==============
-    # zed_launch = IncludeLaunchDescription(
-    #     PythonLaunchDescriptionSource([
-    #         os.path.join(get_package_share_directory('zed_wrapper'),
-    #                      'launch', 'zed_camera.launch.py')
-    #     ]),
-    #     launch_arguments={
-    #         'camera_model': 'zedxm',
-            
-    #         # Streaming client configurations (Overrides standard initialization)
-    #         'stream_address': '127.0.0.1',  # Pull from C++ local server loopback
-    #         'stream_port': '30002',         # Match your C++ configuration port
-        
-    #     }.items(),
-    #     condition=UnlessCondition(sim),
-    # )
+    zed_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            os.path.join(get_package_share_directory('zed_wrapper'),
+                         'launch', 'zed_camera.launch.py')
+        ]),
+        launch_arguments={
+            'camera_model': 'zedxm',
+            'publish_tf': 'true',
+            'depth_mode': 'NEURAL_LIGHT',
+            'pos_tracking_enabled': 'true',
+            'spatial_memory_enabled': 'true',
+        }.items(),
+        condition=UnlessCondition(sim),
+    )
 
     # ============== CONTROL NODES ==============
     rc_override = Node(
@@ -197,9 +196,9 @@ def generate_launch_description():
     return LaunchDescription([
         sim_arg, depth_arg, timeout_arg, engine_arg, fcu_url_arg, system_id_arg, run_mission_arg,
         mavros_launch,
-        # zed_launch,
+        zed_launch,
         rc_override,
-        # depth_controller,
+        depth_controller,
         mode_manager,
         detection_viz,
         nav_tier_manager,

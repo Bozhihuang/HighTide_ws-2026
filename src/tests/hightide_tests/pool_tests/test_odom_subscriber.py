@@ -3,6 +3,7 @@
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Imu
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 class TestOdomSubscriber(Node):
@@ -28,13 +29,25 @@ class TestOdomSubscriber(Node):
             'vel_yaw': {'min': float('inf'), 'max': float('-inf')},
         }
 
-        self.subscription = self.create_subscription(
+        # Cached orientation variables from IMU data
+        self.latest_imu_orientation = None
+
+        self.odom_subscription = self.create_subscription(
             Odometry,
-            '/mavros/local_position/odom',
+            '/mavros/zed/odom',
             self.odom_callback,
             sensor_qos
         )
-        self.get_logger().info("Test Odometry Tracking Subscriber Started. Listening on /mavros/local_position/odom...")
+
+        # Added IMU subscription to pull all vehicle heading parameters
+        self.imu_subscription = self.create_subscription(
+            Imu,
+            '/mavros/imu/data',
+            self.imu_callback,
+            sensor_qos
+        )
+
+        self.get_logger().info("Test Odometry/IMU Tracking Subscriber Started. Position: /mavros/zed/odom | Heading: /mavros/imu/data")
 
     def update_bounds(self, key, value):
         if value < self.bounds[key]['min']:
@@ -42,21 +55,30 @@ class TestOdomSubscriber(Node):
         if value > self.bounds[key]['max']:
             self.bounds[key]['max'] = value
 
+    def imu_callback(self, msg: Imu):
+        # Update cache with the latest high-rate IMU orientations
+        self.latest_imu_orientation = msg.orientation
+
     def odom_callback(self, msg: Odometry):
-        # 1. Extract Current Values
+        # Skip telemetry logs until the first heading packet arrives from the IMU
+        if self.latest_imu_orientation is None:
+            return
+
+        # 1. Extract Current Position and Velocities from ZED Odom
         pos_x = msg.pose.pose.position.x
         pos_y = msg.pose.pose.position.y
         pos_z = msg.pose.pose.position.z
 
-        ori_x = msg.pose.pose.orientation.x
-        ori_y = msg.pose.pose.orientation.y
-        ori_z = msg.pose.pose.orientation.z
-        ori_w = msg.pose.pose.orientation.w
-
         vel_lin_x = msg.twist.twist.linear.x
         vel_ang_z = msg.twist.twist.angular.z
 
-        # 2. Update Limits
+        # 2. Extract Orientation explicitly from the FOG/IMU stream
+        ori_x = self.latest_imu_orientation.x
+        ori_y = self.latest_imu_orientation.y
+        ori_z = self.latest_imu_orientation.z
+        ori_w = self.latest_imu_orientation.w
+
+        # 3. Update Limits
         self.update_bounds('pos_x', pos_x)
         self.update_bounds('pos_y', pos_y)
         self.update_bounds('pos_z', pos_z)
@@ -67,10 +89,9 @@ class TestOdomSubscriber(Node):
         self.update_bounds('vel_x', vel_lin_x)
         self.update_bounds('vel_yaw', vel_ang_z)
 
-        
         deltas = {k: self.bounds[k]['max'] - self.bounds[k]['min'] for k in self.bounds}
 
-        # 3. Print values with oscillation delta (max - min)
+        # 4. Print values with oscillation delta (max - min)
         log_msg = (
             f"\n======================================================== TELEMETRY OSCILLATION DUMP ========================================================"
             f"\n[Metric]          |  Pos X    |  Pos Y    |  Pos Z    |  Ori X    |  Ori Y    |  Ori Z    |  Ori W    |  Lin VelX |  Ang VelZ |"
