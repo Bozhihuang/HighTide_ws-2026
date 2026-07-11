@@ -18,9 +18,9 @@ rc_override_node:
 
 depth_controller_node:
   ros__parameters:
-    kp: 1.0
-    ki: 0.0
-    kd: 0.0
+    kp: 200.0
+    ki: 35.0
+    kd: 10.0
     max_output: 400
     depth_tolerance: 0.1          # meters
     integral_max: 100.0
