@@ -46,7 +46,8 @@ from hightide_mission.behaviors.torpedoes import create_torpedoes_subtree
 from hightide_mission.behaviors.octagon import create_octagon_subtree
 from hightide_mission.behaviors.return_home import create_return_home_subtree
 from hightide_mission.behaviors.emergency import CheckMissionTimeout, EmergencySurface
-from hightide_mission.behaviors.common import LogBehavior, WaitForDuration
+from hightide_mission.behaviors.common import (
+    LogBehavior, WaitForDuration, CallTriggerService)
 
 
 class MissionNode(Node):
@@ -60,10 +61,14 @@ class MissionNode(Node):
         self.declare_parameter('mission_timeout_sec', 900.0)  # 15 minutes
         self.declare_parameter('tick_rate', 10.0)
         self.declare_parameter('skip_tasks', '')  # Comma-separated task names to skip
+        # Pre-race role choice (our coin-flip decision), NOT read off the gate:
+        # 'survey_repair' or 'search_rescue'.
+        self.declare_parameter('chosen_role', 'survey_repair')
 
         self.mission_depth = self.get_parameter('mission_depth_m').value
         self.mission_timeout = self.get_parameter('mission_timeout_sec').value
         self.tick_rate = self.get_parameter('tick_rate').value
+        self.chosen_role = self.get_parameter('chosen_role').value
 
         # Publishers
         self.cmd_pub = self.create_publisher(ThrusterCommand, '/hightide/cmd_vel', 10)
@@ -75,7 +80,7 @@ class MissionNode(Node):
             DetectionArray, '/hightide/tracked_targets',
             self._detections_cb, 10)
         self.create_subscription(
-            Odometry, '/hightide/mavros/local_position/odom',
+            Odometry, '/mavros/zed/odom',
             self._odom_cb, 10)
         self.create_subscription(
             Float64, '/mavros/global_position/rel_alt',
@@ -107,23 +112,24 @@ class MissionNode(Node):
         self.blackboard.register_key(key=bb.MARKERS_DROPPED, access=py_trees.common.Access.WRITE)
         self.blackboard.register_key(key=bb.TORPEDOES_FIRED, access=py_trees.common.Access.WRITE)
         self.blackboard.register_key(key=bb.OBJECTS_COLLECTED, access=py_trees.common.Access.WRITE)
+        self.blackboard.register_key(key=bb.GATE_POSITION, access=py_trees.common.Access.WRITE)
+        self.blackboard.register_key(key=bb.GATE_DIVIDER_SIDE, access=py_trees.common.Access.WRITE)
 
         # Initialize blackboard
         self.blackboard.set(bb.ROS_NODE, self)
         self.blackboard.set(bb.MISSION_START_TIME, pytime.time())
         self.blackboard.set(bb.MISSION_TIMEOUT, self.mission_timeout)
-        self.blackboard.set(bb.CHOSEN_ROLE, 'survey_repair')
+        self.blackboard.set(bb.CHOSEN_ROLE, self.chosen_role)
         self.blackboard.set(bb.CURRENT_TASK, MissionState.IDLE)
         self.blackboard.set(bb.MARKERS_DROPPED, 0)
         self.blackboard.set(bb.TORPEDOES_FIRED, 0)
         self.blackboard.set(bb.OBJECTS_COLLECTED, 0)
+        self.blackboard.set(bb.GATE_POSITION, None)
+        self.blackboard.set(bb.GATE_DIVIDER_SIDE, 'right')
         self.blackboard.set(bb.CURRENT_DEPTH, 0.0)
         self.blackboard.set(bb.CURRENT_HEADING, 0.0)
         self.blackboard.set(bb.VEHICLE_ARMED, False)
         self.blackboard.set(bb.VEHICLE_MODE, '')
-
-        # Additional attributes for behaviors to use
-        self.vision_servo_class = ''
 
         # Build behavior tree
         self.tree = self._build_tree()
@@ -133,6 +139,7 @@ class MissionNode(Node):
             1.0 / self.tick_rate, self._tick)
 
         self.get_logger().info('=== MISSION NODE STARTED ===')
+        self.get_logger().info(f'Chosen role: {self.chosen_role}')
         self.get_logger().info(f'Mission depth: {self.mission_depth}m')
         self.get_logger().info(f'Timeout: {self.mission_timeout}s')
 
@@ -153,19 +160,31 @@ class MissionNode(Node):
             ],
         )
 
-        # Competition tasks in order
+        # Competition tasks in order. Each is wrapped so that a FAILURE (e.g. a
+        # prop never detected) is converted to SUCCESS — the sequence then moves
+        # on to the next task instead of aborting the whole run. RUNNING still
+        # passes through, so a task keeps ticking until it finishes or times out.
+        def resilient(subtree):
+            return py_trees.decorators.FailureIsSuccess(
+                name=f'Try_{subtree.name}', child=subtree)
+
         tasks = py_trees.composites.Sequence(
             name='CompetitionTasks',
             memory=True,
             children=[
-                create_gate_subtree(),
-                create_slalom_subtree(),
-                create_bins_subtree(),
-                create_torpedoes_subtree(),
-                create_octagon_subtree(),
-                create_return_home_subtree(),
+                resilient(create_gate_subtree()),
+                resilient(create_slalom_subtree()),
+                resilient(create_bins_subtree()),
+                resilient(create_torpedoes_subtree()),
+                resilient(create_octagon_subtree()),
+                resilient(create_return_home_subtree()),
             ],
         )
+
+        # Barrel roll as the final style maneuver. This is LAST on purpose — it
+        # switches to MANUAL and destroys the FOG heading reference, so it must
+        # run only after every heading-dependent task is complete.
+        style_finale = CallTriggerService('BarrelRollFinale', '/hightide/barrel_roll')
 
         # Main mission sequence
         main_mission = py_trees.composites.Sequence(
@@ -174,6 +193,8 @@ class MissionNode(Node):
             children=[
                 pre_dive,
                 tasks,
+                LogBehavior('Style_Finale', 'Executing barrel roll finale'),
+                style_finale,
                 LogBehavior('Mission_Complete', '=== ALL TASKS COMPLETED ==='),
             ],
         )

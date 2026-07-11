@@ -1,77 +1,43 @@
 """
-Task 1: Begin Assessment (Gate) — Identify role and pass through correct side.
+Task 1: Begin Assessment (Gate) — pass through the half matching our role.
 
-Strategy: Use YOLO to find gate and role symbols (🧭⚒️ vs 🛟🆘).
-Strafe (crab walk) to align with correct half. Surge through.
-Execute 360° yaw spin for style points — FOG snaps back to heading.
+The role (Survey & Repair vs Search & Rescue) is a PRE-RACE decision set via
+the `chosen_role` parameter on the mission node — it is NOT read off the gate
+(both symbols are always present, so detecting one tells us nothing about our
+choice). Strategy: find the gate, strafe (crab walk) to center our role symbol,
+record which half it was on so the slalom can stay on the matching side of the
+red divider, surge through, then a heading-safe 360° yaw spin for style points.
 """
 
 import py_trees
-from .common import (WaitForDetection, PublishThrusterCommand,
-                     WaitForDuration, SetBlackboardValue, LogBehavior, StopMotion)
+from .common import (WaitForDetection, WaitForAnyDetection, PublishThrusterCommand,
+                     CallTriggerService, WaitForDuration, SetBlackboardValue,
+                     LogBehavior, StopMotion, RecordPose)
 from . import blackboard_keys as bb
 
 
-class IdentifyGateRole(py_trees.behaviour.Behaviour):
+# Role -> the gate symbols that mark that role's half of the gate (ffc model
+# class names). The Search & Rescue half only exposes an SOS symbol to the
+# model (the life-ring is not a trained class), which is enough to align on.
+ROLE_SYMBOLS = {
+    'survey_repair': {'compass', 'hammer_and_wrench'},
+    'search_rescue': {'sos'},
+}
+
+# The ffc model has no dedicated 'gate' box — we detect the gate's presence by
+# seeing ANY of the role symbols mounted on it (both halves are always present).
+GATE_SYMBOLS = {'compass', 'hammer_and_wrench', 'sos'}
+
+
+class ConfirmGateRole(py_trees.behaviour.Behaviour):
     """
-    Look at gate detections to determine role assignment.
-    Searches for symbol_compass/symbol_pickaxe (Survey & Repair)
-    or symbol_lifering/symbol_sos (Search & Rescue).
-    """
-
-    def __init__(self, name='IdentifyGateRole', timeout=15.0):
-        super().__init__(name)
-        self.timeout = timeout
-        self.start_time = None
-        self.blackboard = self.attach_blackboard_client()
-        self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
-        self.blackboard.register_key(key=bb.CHOSEN_ROLE, access=py_trees.common.Access.WRITE)
-        self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
-
-    def initialise(self):
-        import time
-        self.start_time = time.time()
-
-    def update(self):
-        import time
-        if (time.time() - self.start_time) > self.timeout:
-            # Default to survey_repair if can't identify
-            self.blackboard.set(bb.CHOSEN_ROLE, 'survey_repair')
-            return py_trees.common.Status.SUCCESS
-
-        try:
-            detections = self.blackboard.get(bb.DETECTIONS)
-        except KeyError:
-            return py_trees.common.Status.RUNNING
-
-        if detections is None:
-            return py_trees.common.Status.RUNNING
-
-        survey_symbols = {'symbol_compass', 'symbol_pickaxe'}
-        rescue_symbols = {'symbol_lifering', 'symbol_sos'}
-
-        for det in detections.detections:
-            if det.class_name in survey_symbols and det.confidence > 0.5:
-                self.blackboard.set(bb.CHOSEN_ROLE, 'survey_repair')
-                node = self.blackboard.get(bb.ROS_NODE)
-                node.get_logger().info('Role identified: SURVEY & REPAIR')
-                return py_trees.common.Status.SUCCESS
-            elif det.class_name in rescue_symbols and det.confidence > 0.5:
-                self.blackboard.set(bb.CHOSEN_ROLE, 'search_rescue')
-                node = self.blackboard.get(bb.ROS_NODE)
-                node.get_logger().info('Role identified: SEARCH & RESCUE')
-                return py_trees.common.Status.SUCCESS
-
-        return py_trees.common.Status.RUNNING
-
-
-class AlignWithGateHalf(py_trees.behaviour.Behaviour):
-    """
-    Strafe to align with the correct gate half based on chosen role.
-    Uses vision servo to center on the role symbol.
+    Log/confirm the pre-chosen role by checking its symbol is visible on the
+    gate. This never CHANGES the role (that is our own coin-flip decision) — it
+    just waits briefly for the expected symbol so downstream alignment has a
+    target, and succeeds best-effort on timeout.
     """
 
-    def __init__(self, name='AlignWithGateHalf', timeout=20.0):
+    def __init__(self, name='ConfirmGateRole', timeout=15.0):
         super().__init__(name)
         self.timeout = timeout
         self.start_time = None
@@ -83,42 +49,114 @@ class AlignWithGateHalf(py_trees.behaviour.Behaviour):
     def initialise(self):
         import time
         self.start_time = time.time()
-        node = self.blackboard.get(bb.ROS_NODE)
-        # Enable vision servo for the correct symbols
-        role = self.blackboard.get(bb.CHOSEN_ROLE)
-        if role == 'survey_repair':
-            target = 'symbol_compass'
-        else:
-            target = 'symbol_lifering'
-
-        # Set vision servo parameters dynamically
-        from rclpy.parameter import Parameter
-        node.vision_servo_class = target
-        node.get_logger().info(f'Aligning with gate half for {role} — target: {target}')
 
     def update(self):
         import time
+        node = self.blackboard.get(bb.ROS_NODE)
+        role = self.blackboard.get(bb.CHOSEN_ROLE)
+        target_classes = ROLE_SYMBOLS.get(role, ROLE_SYMBOLS['survey_repair'])
+
         if (time.time() - self.start_time) > self.timeout:
-            return py_trees.common.Status.SUCCESS  # Best effort
+            node.get_logger().warn(
+                f'Role symbol for {role} not seen — proceeding anyway')
+            return py_trees.common.Status.SUCCESS
 
         try:
             detections = self.blackboard.get(bb.DETECTIONS)
-            role = self.blackboard.get(bb.CHOSEN_ROLE)
         except KeyError:
-            return py_trees.common.Status.RUNNING
-
-        target_classes = ({'symbol_compass', 'symbol_pickaxe'}
-                         if role == 'survey_repair'
-                         else {'symbol_lifering', 'symbol_sos'})
+            detections = None
 
         if detections:
             for det in detections.detections:
-                if det.class_name in target_classes:
-                    img_w = detections.image_width or 1280
-                    # Check if approximately centered (within 15% of center)
-                    normalized_x = det.center_x / img_w
-                    if abs(normalized_x - 0.5) < 0.15:
-                        return py_trees.common.Status.SUCCESS
+                if det.class_name in target_classes and det.confidence > 0.5:
+                    node.get_logger().info(f'Confirmed role half visible: {role}')
+                    return py_trees.common.Status.SUCCESS
+
+        return py_trees.common.Status.RUNNING
+
+
+class AlignWithGateHalf(py_trees.behaviour.Behaviour):
+    """
+    Crab-walk to center our role symbol in the frame, keeping heading locked
+    (FOG holds yaw). Records which half of the gate the role symbol sits on
+    into GATE_DIVIDER_SIDE so the slalom can keep the red divider on the same
+    side. Succeeds once centered, or best-effort on timeout.
+    """
+
+    def __init__(self, name='AlignWithGateHalf', timeout=20.0, center_tol=0.12):
+        super().__init__(name)
+        self.timeout = timeout
+        self.center_tol = center_tol
+        self.start_time = None
+        self.side_recorded = False
+        self.blackboard = self.attach_blackboard_client()
+        self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.CHOSEN_ROLE, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.GATE_DIVIDER_SIDE, access=py_trees.common.Access.WRITE)
+        self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
+
+    def initialise(self):
+        import time
+        self.start_time = time.time()
+        self.side_recorded = False
+        role = self.blackboard.get(bb.CHOSEN_ROLE)
+        node = self.blackboard.get(bb.ROS_NODE)
+        node.get_logger().info(f'Aligning with gate half for role: {role}')
+
+    def update(self):
+        import time
+        from hightide_interfaces.msg import ThrusterCommand
+        node = self.blackboard.get(bb.ROS_NODE)
+        role = self.blackboard.get(bb.CHOSEN_ROLE)
+        target_classes = ROLE_SYMBOLS.get(role, ROLE_SYMBOLS['survey_repair'])
+
+        if (time.time() - self.start_time) > self.timeout:
+            node.get_logger().warn('Gate align timed out — proceeding best-effort')
+            node.cmd_pub.publish(ThrusterCommand())
+            return py_trees.common.Status.SUCCESS
+
+        try:
+            detections = self.blackboard.get(bb.DETECTIONS)
+        except KeyError:
+            detections = None
+
+        target = None
+        if detections:
+            for det in detections.detections:
+                if det.class_name in target_classes and det.confidence > 0.4:
+                    target = det
+                    break
+
+        cmd = ThrusterCommand()
+        cmd.header.stamp = node.get_clock().now().to_msg()
+
+        if target is None:
+            # Symbol not visible yet — creep forward slowly to bring it into view.
+            cmd.surge = 0.1
+            node.cmd_pub.publish(cmd)
+            return py_trees.common.Status.RUNNING
+
+        img_w = detections.image_width or 1280
+        normalized_x = target.center_x / img_w
+
+        # Record which half the role symbol is on the first time we see it.
+        # This is the side of the gate we pass through; the slalom keeps the
+        # red divider/pipe on the matching side for the bonus.
+        if not self.side_recorded:
+            side = 'right' if normalized_x > 0.5 else 'left'
+            self.blackboard.set(bb.GATE_DIVIDER_SIDE, side)
+            self.side_recorded = True
+            node.get_logger().info(f'Role symbol on {side} half of gate')
+
+        lateral_error = normalized_x - 0.5
+        cmd.sway = max(-0.4, min(0.4, lateral_error * 2.0))  # + = strafe right
+        cmd.surge = 0.05  # gentle forward creep while centering
+        node.cmd_pub.publish(cmd)
+
+        if abs(lateral_error) < self.center_tol:
+            node.get_logger().info('Centered on role half of gate')
+            node.cmd_pub.publish(ThrusterCommand())
+            return py_trees.common.Status.SUCCESS
 
         return py_trees.common.Status.RUNNING
 
@@ -229,8 +267,8 @@ def create_gate_subtree() -> py_trees.behaviour.Behaviour:
         name='CoinFlipLogic',
         memory=False,
         children=[
-            # 1. Quick check for Heads (gate in front)
-            WaitForDetection('QuickFindGate', 'gate', timeout=3.0),
+            # 1. Quick check for Heads (gate in front) — a gate role symbol visible.
+            WaitForAnyDetection('QuickFindGate', GATE_SYMBOLS, timeout=3.0),
             # 2. If it fails, assume Tails (gate in back). Turn exactly 180° using FOG and search again.
             py_trees.composites.Sequence(
                 name='AssumeTails',
@@ -240,7 +278,7 @@ def create_gate_subtree() -> py_trees.behaviour.Behaviour:
                     HeadingTurn('Turn180', degrees=180.0, tolerance=2.0, timeout=10.0),
                     StopMotion('StopTurn'),
                     WaitForDuration('SettleDown', duration_sec=1.0),
-                    WaitForDetection('FindGateAfterTurn', 'gate', timeout=60.0),
+                    WaitForAnyDetection('FindGateAfterTurn', GATE_SYMBOLS, timeout=60.0),
                 ]
             )
         ]
@@ -251,15 +289,19 @@ def create_gate_subtree() -> py_trees.behaviour.Behaviour:
         memory=True,
         children=[
             LogBehavior('Gate_Start', 'Starting Task 1: Gate'),
+            # Remember where the gate is (odometry) so Return Home can navigate
+            # back to it — we have no pinger to home on.
+            RecordPose('RecordGatePose', bb.GATE_POSITION),
             find_gate_logic,
             SurgeThrough('ApproachGate', duration=3.0, speed=0.3),
-            IdentifyGateRole('IdentifyRole'),
+            ConfirmGateRole('ConfirmRole'),
             AlignWithGateHalf('AlignGate'),
             SurgeThrough('PassThrough', duration=5.0, speed=0.5),
             StopMotion('StopAfterGate'),
+            # Real 360° yaw spin for style — heading-safe (FOG returns to start).
             LogBehavior('Gate_StyleSpin', 'Executing style yaw spin'),
-            # Yaw spin handled by the mission node calling yaw_controller
-            WaitForDuration('StyleSpinDelay', duration_sec=5.0),
+            CallTriggerService('YawSpinStyle', '/hightide/yaw_spin'),
+            StopMotion('StopAfterSpin'),
             LogBehavior('Gate_Done', 'Task 1 Gate COMPLETE'),
         ],
     )

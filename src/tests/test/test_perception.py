@@ -22,11 +22,11 @@ class TestClassNames:
 
     def test_class_names_count(self):
         from hightide_perception import CLASS_NAMES
-        assert len(CLASS_NAMES) == 26, f'Expected 26 classes, got {len(CLASS_NAMES)}'
+        assert len(CLASS_NAMES) == 8, f'Expected 8 classes, got {len(CLASS_NAMES)}'
 
     def test_class_ids_sequential(self):
         from hightide_perception import CLASS_NAMES
-        expected_ids = list(range(26))
+        expected_ids = list(range(8))
         actual_ids = sorted(CLASS_NAMES.keys())
         assert actual_ids == expected_ids, f'Non-sequential IDs: {actual_ids}'
 
@@ -41,13 +41,29 @@ class TestClassNames:
         names = list(CLASS_NAMES.values())
         assert len(names) == len(set(names)), 'Duplicate class names found'
 
+    def test_class_map_matches_ffc_model(self):
+        """CLASS_NAMES must match the front-facing-camera model's data.yaml
+        exactly — id order is the contract with the trained weights."""
+        from hightide_perception import CLASS_NAMES
+        expected = {
+            0: 'blood',
+            1: 'buoy',
+            2: 'compass',
+            3: 'circle',
+            4: 'fire',
+            5: 'hammer_and_wrench',
+            6: 'slalom',
+            7: 'sos',
+        }
+        assert CLASS_NAMES == expected
+
     def test_critical_classes_present(self):
-        """Competition-critical classes must exist."""
+        """Competition-critical classes (structural cues) must exist."""
         from hightide_perception import CLASS_NAMES
         required = [
-            'gate', 'gate_divider', 'pipe_red', 'pipe_white',
-            'bin', 'torpedo_board', 'torpedo_hole_large', 'torpedo_hole_small',
-            'octagon', 'path_marker',
+            'slalom',   # red slalom poles
+            'circle',   # torpedo holes
+            'buoy',     # octagon cue
         ]
         names = set(CLASS_NAMES.values())
         for cls in required:
@@ -58,24 +74,23 @@ class TestClassNames:
         from hightide_perception import CLASS_NAMES
         names = set(CLASS_NAMES.values())
         # Survey & Repair
-        assert 'symbol_compass' in names
-        assert 'symbol_pickaxe' in names
+        assert 'compass' in names
+        assert 'hammer_and_wrench' in names
         # Search & Rescue
-        assert 'symbol_lifering' in names
-        assert 'symbol_sos' in names
+        assert 'sos' in names
 
     def test_bin_symbols_present(self):
         from hightide_perception import CLASS_NAMES
         names = set(CLASS_NAMES.values())
-        assert 'symbol_fire' in names
-        assert 'symbol_blood' in names
+        assert 'fire' in names
+        assert 'blood' in names
 
 
 class TestTrackedTarget:
     """Tests for the TrackedTarget class in target_tracker_node."""
 
     def _make_detection(self, x_min=100, y_min=100, x_max=200, y_max=200,
-                        class_id=0, class_name='gate', confidence=0.9):
+                        class_id=0, class_name='compass', confidence=0.9):
         from hightide_interfaces.msg import Detection
         det = Detection()
         det.class_id = class_id
@@ -96,7 +111,7 @@ class TestTrackedTarget:
         track = TrackedTarget(det, track_id=0)
         assert track.track_id == 0
         assert track.class_id == 0
-        assert track.class_name == 'gate'
+        assert track.class_name == 'compass'
         assert track.hit_count == 1
         assert track.depth_m == -1.0
 

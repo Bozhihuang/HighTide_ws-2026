@@ -25,8 +25,16 @@ class SlalomPipe(py_trees.behaviour.Behaviour):
         self.start_time = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
-        self.blackboard.register_key(key=bb.CHOSEN_ROLE, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.GATE_DIVIDER_SIDE, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
+
+    def _divider_side(self):
+        """Which gate half we passed through ('right'/'left'), default 'right'."""
+        try:
+            side = self.blackboard.get(bb.GATE_DIVIDER_SIDE)
+        except KeyError:
+            side = None
+        return side if side in ('right', 'left') else 'right'
 
     def initialise(self):
         import time
@@ -50,12 +58,14 @@ class SlalomPipe(py_trees.behaviour.Behaviour):
             detections = None
 
         if self.phase == 'approach':
-            # Surge forward until we see a pipe close enough
+            # Surge forward until we see a red pole close enough. The ffc model's
+            # 'slalom' class IS the red poles (white pipes aren't a trained
+            # class), which is exactly the divider we align relative to.
             cmd.surge = 0.3
             pipe_det = None
             if detections:
                 for det in detections.detections:
-                    if det.class_name in ('pipe_red', 'pipe_white'):
+                    if det.class_name == 'slalom':
                         pipe_det = det
                         break
 
@@ -67,27 +77,31 @@ class SlalomPipe(py_trees.behaviour.Behaviour):
             return py_trees.common.Status.RUNNING
 
         elif self.phase == 'strafe':
-            # Determine correct side based on role/gate choice
-            # If survey_repair → red divider was on our chosen side
-            role = self.blackboard.get(bb.CHOSEN_ROLE)
-            # Convention: pass with red pipe on the same side as at gate
-            # Simple approach: strafe right to put red pipe on right
-            sway_dir = 0.4 if role == 'survey_repair' else -0.4
+            # Keep the red divider on the SAME side we passed at the gate.
+            # If we passed on the RIGHT half of the gate, the red divider was
+            # on our left, so here we stay right of the red pipe (strafe right,
+            # driving the red pipe toward the left of frame). Mirror for left.
+            # NOTE: sign convention assumes +sway = strafe right; flip if the
+            # slalom bonus side comes out wrong in pool testing.
+            side = self._divider_side()
+            if side == 'right':
+                sway_dir = 0.4          # strafe right, red pipe -> left of frame
+                red_passed = lambda nx: nx < 0.4
+            else:
+                sway_dir = -0.4         # strafe left, red pipe -> right of frame
+                red_passed = lambda nx: nx > 0.6
 
             cmd.sway = sway_dir
             cmd.surge = 0.1  # Slight forward motion
             node.cmd_pub.publish(cmd)
 
-            # Check if pipe is now on the correct side of frame
+            # Check if the red pole ('slalom') has moved to the correct side of frame
             if detections:
                 for det in detections.detections:
-                    if det.class_name == 'pipe_red':
+                    if det.class_name == 'slalom':
                         img_w = detections.image_width or 1280
                         normalized_x = det.center_x / img_w
-                        # Red pipe should be on right (>0.6) for survey_repair
-                        if role == 'survey_repair' and normalized_x > 0.65:
-                            self.phase = 'pass'
-                        elif role == 'search_rescue' and normalized_x < 0.35:
+                        if red_passed(normalized_x):
                             self.phase = 'pass'
 
             # Timeout strafe after 5 seconds
@@ -114,8 +128,10 @@ def create_slalom_subtree() -> py_trees.behaviour.Behaviour:
         memory=True,
         children=[
             LogBehavior('Slalom_Start', 'Starting Task 2: Slalom'),
-            WaitForDetection('FindPathToSlalom', 'path_marker', timeout=30.0),
-            WaitForDuration('FollowPath', duration_sec=3.0),
+            # No path_marker class in the ffc model — head straight for the first
+            # red pole instead of following a path lead-in.
+            WaitForDetection('FindSlalom', 'slalom', timeout=30.0),
+            WaitForDuration('ApproachSettle', duration_sec=2.0),
             SlalomPipe('SlalomPipe1', pipe_number=1),
             SlalomPipe('SlalomPipe2', pipe_number=2),
             SlalomPipe('SlalomPipe3', pipe_number=3),

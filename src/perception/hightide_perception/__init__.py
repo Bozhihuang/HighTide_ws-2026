@@ -1,31 +1,23 @@
 # hightide_perception package
 
-# Competition YOLO class mapping
+# Competition YOLO class mapping.
+#
+# These IDs/names MUST match the front-facing-camera (ffc) model's data.yaml
+# exactly — the detector reads names from this dict, so the order/index is the
+# contract with the trained weights. This is the 8-class ffc model (symbols +
+# slalom red poles + octagon buoy + torpedo holes), NOT a structural-box model:
+#   - no dedicated 'gate'/'bin'/'torpedo_board'/'octagon' boxes — those are
+#     inferred from the role symbols / buoy that sit on them.
+#   - 'slalom' == the RED slalom poles only (per the labeling guide), which is
+#     exactly the divider we align to, so the red-side bonus still works.
+#   - 'circle' == each torpedo hole (large vs small distinguished by box size).
 CLASS_NAMES = {
-    0: 'gate',
-    1: 'gate_divider',
-    2: 'symbol_compass',
-    3: 'symbol_pickaxe',
-    4: 'symbol_lifering',
-    5: 'symbol_sos',
-    6: 'pipe_red',
-    7: 'pipe_white',
-    8: 'bin',
-    9: 'symbol_fire',
-    10: 'symbol_blood',
-    11: 'torpedo_board',
-    12: 'torpedo_hole_large',
-    13: 'torpedo_hole_small',
-    14: 'octagon',
-    15: 'table',
-    16: 'basket',
-    17: 'object_bolt',
-    18: 'object_plug',
-    19: 'object_pill',
-    20: 'object_bandaid',
-    21: 'symbol_warning',
-    22: 'symbol_helmet',
-    23: 'path_marker',
-    24: 'symbol_firetruck',
-    25: 'symbol_ambulance',
+    0: 'blood',              # blood-drop emoji — Search & Rescue role symbol
+    1: 'buoy',               # octagon buoy border — octagon approach cue
+    2: 'compass',            # compass emoji — Survey & Repair role symbol
+    3: 'circle',             # a torpedo hole (incl. its red ring)
+    4: 'fire',               # fire emoji — Survey & Repair role symbol
+    5: 'hammer_and_wrench',  # hammer+wrench emoji — Survey & Repair role symbol
+    6: 'slalom',             # RED slalom poles
+    7: 'sos',                # SOS emoji — Search & Rescue role symbol
 }

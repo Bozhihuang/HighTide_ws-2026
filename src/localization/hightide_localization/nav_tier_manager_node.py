@@ -109,30 +109,19 @@ class NavTierManagerNode(Node):
         return response
 
     def _evaluate_tier(self):
-        """Evaluate sensor health and select appropriate tier."""
-        now = self.get_clock().now()
-        status = ''
+        """Tier selection disabled — always report VSLAM.
 
-        # Check if forced
+        Sensor-health-based tier switching (VIO / dead-reckoning fallback) is
+        intentionally bypassed for now so this node never overrides the rest of
+        the stack. It just holds the tier at VSLAM. A manual override via
+        /hightide/set_navigation_tier is still honored if explicitly requested.
+        """
         if self.forced_tier is not None:
             self.current_tier = self.forced_tier
             status = f'FORCED to tier {self.forced_tier}'
         else:
-            # Check ZED data staleness
-            zed_stale = True
-            if self.last_odom_time:
-                dt = (now - self.last_odom_time).nanoseconds / 1e9
-                zed_stale = dt > self.stale_timeout
-
-            if zed_stale or self.tracking_confidence < self.vio_thresh:
-                self.current_tier = NavigationTier.DEAD_RECKONING
-                status = f'ZED {"stale" if zed_stale else "low confidence"}'
-            elif self.tracking_confidence >= self.vslam_thresh:
-                self.current_tier = NavigationTier.VSLAM
-                status = 'High confidence tracking'
-            else:
-                self.current_tier = NavigationTier.VIO
-                status = 'Moderate confidence tracking'
+            self.current_tier = NavigationTier.VSLAM
+            status = 'VSLAM (tier switching disabled)'
 
         # Publish
         msg = NavigationTier()

@@ -6,8 +6,9 @@ Calculate bin X/Y coordinate from ZED depth while visible. Switch to dead
 reckoning when bin goes below camera FOV. Hover and drop markers.
 """
 
+import math
 import py_trees
-from .common import (WaitForDetection, WaitForDuration,
+from .common import (WaitForDetection, WaitForAnyDetection, WaitForDuration,
                      LogBehavior, StopMotion, PublishDepthSetpoint)
 from . import blackboard_keys as bb
 
@@ -35,7 +36,7 @@ class IdentifyCorrectBin(py_trees.behaviour.Behaviour):
             return py_trees.common.Status.FAILURE
 
         role = self.blackboard.get(bb.CHOSEN_ROLE)
-        target_symbol = 'symbol_fire' if role == 'survey_repair' else 'symbol_blood'
+        target_symbol = 'fire' if role == 'survey_repair' else 'blood'
 
         try:
             detections = self.blackboard.get(bb.DETECTIONS)
@@ -56,22 +57,36 @@ class IdentifyCorrectBin(py_trees.behaviour.Behaviour):
 
 class NavigateOverBin(py_trees.behaviour.Behaviour):
     """
-    Dead reckon over the bin position. Since camera is forward-facing,
-    we calculate distance from last known position and surge forward.
+    Drive forward over the bin position. The camera is forward-facing, so we
+    grab the ZED range to the bin (det.depth_m) while it is still visible, then
+    advance that measured distance using ZED odometry (CURRENT_POSE) as the
+    ruler — not a timed guess. A timeout is kept only as a safety fallback if
+    odometry never arrives.
+
+    NOTE: with no downward camera we cannot confirm we are actually over the
+    bin — odometry makes the travel distance accurate, but the drop position
+    stays an inference. This is a hardware limitation, not a code one.
     """
 
-    def __init__(self, name='NavigateOverBin', surge_distance=2.0):
+    def __init__(self, name='NavigateOverBin', surge_distance=2.0,
+                 surge=0.4, timeout=30.0):
         super().__init__(name)
         self.surge_dist = surge_distance
+        self.surge = surge
+        self.timeout = timeout
         self.start_time = None
+        self.start_pos = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.TARGET_DETECTION, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.CURRENT_POSE, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
 
     def initialise(self):
         import time
         self.start_time = time.time()
-        # Calculate surge distance from last known detection depth
+        self.start_pos = None
+
+        # Distance to cover = last-seen ZED range to the bin.
         try:
             det = self.blackboard.get(bb.TARGET_DETECTION)
             if det and det.depth_m > 0:
@@ -79,23 +94,47 @@ class NavigateOverBin(py_trees.behaviour.Behaviour):
         except KeyError:
             pass
 
+        # Snapshot starting odometry position to measure travel against.
+        try:
+            pose = self.blackboard.get(bb.CURRENT_POSE)
+            if pose is not None:
+                self.start_pos = (pose.pose.pose.position.x, pose.pose.pose.position.y)
+        except KeyError:
+            pass
+
+    def _distance_traveled(self):
+        """Straight-line distance from where this behavior started, via ZED odom."""
+        if self.start_pos is None:
+            return None
+        try:
+            pose = self.blackboard.get(bb.CURRENT_POSE)
+        except KeyError:
+            return None
+        if pose is None:
+            return None
+        pos = pose.pose.pose.position
+        return math.hypot(pos.x - self.start_pos[0], pos.y - self.start_pos[1])
+
     def update(self):
         import time
         from hightide_interfaces.msg import ThrusterCommand
         node = self.blackboard.get(bb.ROS_NODE)
 
-        # Time-based dead reckoning
-        # Assuming ~0.2 m/s at 0.4 thrust
-        travel_time = self.surge_dist / 0.2
-        elapsed = time.time() - self.start_time
+        if (time.time() - self.start_time) > self.timeout:
+            node.get_logger().warn('NavigateOverBin timed out (no odom / never advanced)')
+            node.cmd_pub.publish(ThrusterCommand())
+            return py_trees.common.Status.SUCCESS
 
-        if elapsed > travel_time:
+        traveled = self._distance_traveled()
+        if traveled is not None and traveled >= self.surge_dist:
             node.cmd_pub.publish(ThrusterCommand())  # Stop
+            node.get_logger().info(
+                f'Advanced {traveled:.2f}m over bin (odometry) — stopping')
             return py_trees.common.Status.SUCCESS
 
         cmd = ThrusterCommand()
         cmd.header.stamp = node.get_clock().now().to_msg()
-        cmd.surge = 0.4
+        cmd.surge = self.surge
         node.cmd_pub.publish(cmd)
         return py_trees.common.Status.RUNNING
 
@@ -153,9 +192,9 @@ def create_bins_subtree() -> py_trees.behaviour.Behaviour:
         memory=True,
         children=[
             LogBehavior('Bins_Start', 'Starting Task 3: Bins'),
-            WaitForDetection('FindPathToBins', 'path_marker', timeout=30.0),
-            WaitForDuration('FollowPathToBins', duration_sec=3.0),
-            WaitForDetection('FindBins', 'bin', timeout=45.0),
+            # No path_marker / generic 'bin' class in the ffc model — the bins are
+            # recognized directly by their fire/blood symbols.
+            WaitForAnyDetection('FindBins', {'fire', 'blood'}, timeout=45.0),
             IdentifyCorrectBin('IdentifyBin'),
             NavigateOverBin('NavigateOverBin1'),
             StopMotion('HoverOverBin1'),

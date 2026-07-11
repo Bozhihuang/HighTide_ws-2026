@@ -4,6 +4,7 @@ mission_node:
     mission_depth_m: 1.0           # Competition pool depth target
     mission_timeout_sec: 900.0     # 15 minute mission window
     tick_rate: 10.0                # Behavior tree tick rate (Hz)
+    chosen_role: 'survey_repair'   # Pre-race coin-flip choice: survey_repair | search_rescue
 
 # ============== CONTROL ==============
 rc_override_node:
@@ -32,7 +33,10 @@ mode_manager_node:
 # ============== PERCEPTION ==============
 yolo_detector_node:
   ros__parameters:
-    engine_path: '/home/zedbox/models/hightide_yolov8n.engine'
+    # Front-facing-camera (ffc) 8-class model. Export the .pt to a TensorRT
+    # engine on the ZED Box first:  yolo export model=ffc.pt format=engine imgsz=640
+    # The class list must match hightide_perception.CLASS_NAMES (see that file).
+    engine_path: '/home/zedbox/models/ffc_yolov8.engine'
     confidence_threshold: 0.5
     nms_threshold: 0.45
     input_width: 640
@@ -115,3 +119,4 @@ actuator_driver_node:
     dropper_1_pin: 2.0
     dropper_2_pin: 3.0
     pulse_duration_ms: 500
+    fire_max_attempts: 4

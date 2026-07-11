@@ -1,11 +1,16 @@
 """
-Task 5: Resupply (Octagon) — Navigate into octagon, face correct image, surface.
+Task 5: Restore (Octagon) — surface inside the octagon.
 
-Strategy: Find octagon via visual search. Navigate inside. Identify correct
-image based on role and items collected. Yaw spin for style points.
-Surface inside octagon.
+Hardware reality for hightide: we have NO manipulator/claw, so the resupply
+portion (collecting nut/bolt/plug/pill/bandage and placing them in baskets, and
+the inventory-based facing/rotation bonuses) is out of scope. We also have NO
+hydrophone, so we cannot home on the acoustic pinger. This task therefore does
+the achievable core: get to the octagon (drive toward it visually if the camera
+picks it up, otherwise advance a fixed distance using ZED odometry) and surface
+inside it.
 """
 
+import math
 import py_trees
 from .common import (WaitForDetection, WaitForDuration,
                      LogBehavior, StopMotion, PublishDepthSetpoint)
@@ -13,19 +18,51 @@ from . import blackboard_keys as bb
 
 
 class NavigateIntoOctagon(py_trees.behaviour.Behaviour):
-    """Surge into the octagon area."""
+    """
+    Drive forward into the octagon. If the octagon is detected we center on it
+    and stop once it fills the frame (we're underneath it). Otherwise we advance
+    a fixed real-world distance using ZED odometry (CURRENT_POSE) as the
+    measuring stick — not a timed guess — then stop, on the assumption the
+    octagon is roughly `advance_distance_m` ahead. A timeout is kept only as a
+    safety fallback in case odometry never arrives.
+    """
 
-    def __init__(self, name='NavigateIntoOctagon', timeout=30.0):
+    def __init__(self, name='NavigateIntoOctagon', advance_distance_m=1.0,
+                 surge=0.3, timeout=40.0):
         super().__init__(name)
+        self.advance_distance_m = advance_distance_m
+        self.surge = surge
         self.timeout = timeout
         self.start_time = None
+        self.start_pos = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.CURRENT_POSE, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
 
     def initialise(self):
         import time
         self.start_time = time.time()
+        self.start_pos = None
+        try:
+            pose = self.blackboard.get(bb.CURRENT_POSE)
+            if pose is not None:
+                self.start_pos = (pose.pose.pose.position.x, pose.pose.pose.position.y)
+        except KeyError:
+            pass
+
+    def _distance_traveled(self):
+        """Straight-line distance from where this behavior started, via ZED odom."""
+        if self.start_pos is None:
+            return None
+        try:
+            pose = self.blackboard.get(bb.CURRENT_POSE)
+        except KeyError:
+            return None
+        if pose is None:
+            return None
+        pos = pose.pose.pose.position
+        return math.hypot(pos.x - self.start_pos[0], pos.y - self.start_pos[1])
 
     def update(self):
         import time
@@ -33,106 +70,53 @@ class NavigateIntoOctagon(py_trees.behaviour.Behaviour):
         node = self.blackboard.get(bb.ROS_NODE)
 
         if (time.time() - self.start_time) > self.timeout:
+            node.get_logger().warn('Octagon approach timed out (no odom / never advanced)')
+            node.cmd_pub.publish(ThrusterCommand())
             return py_trees.common.Status.SUCCESS
-
-        # Surge forward toward octagon
-        cmd = ThrusterCommand()
-        cmd.header.stamp = node.get_clock().now().to_msg()
-        cmd.surge = 0.3
-        node.cmd_pub.publish(cmd)
 
         try:
             detections = self.blackboard.get(bb.DETECTIONS)
         except KeyError:
-            return py_trees.common.Status.RUNNING
+            detections = None
 
-        # If octagon is very large in frame, we're inside it
+        cmd = ThrusterCommand()
+        cmd.header.stamp = node.get_clock().now().to_msg()
+        cmd.surge = self.surge
+
+        # The ffc model has no 'octagon' box — the octagon's buoy is the visual
+        # cue. If we see the 'buoy', center on it and treat "we're inside" as its
+        # box filling most of the frame. Takes priority over the odometry advance.
         if detections:
             for det in detections.detections:
-                if det.class_name == 'octagon':
-                    # If bounding box fills most of frame, we're under it
+                if det.class_name == 'buoy':
                     img_w = detections.image_width or 1280
+                    cmd.sway = max(-0.3, min(0.3,
+                                   ((det.center_x / img_w) - 0.5) * 1.5))
                     if det.width > img_w * 0.7:
+                        node.cmd_pub.publish(ThrusterCommand())
+                        node.get_logger().info('Reached octagon interior (buoy visual)')
                         return py_trees.common.Status.SUCCESS
+                    node.cmd_pub.publish(cmd)
+                    return py_trees.common.Status.RUNNING
 
-        return py_trees.common.Status.RUNNING
-
-
-class FaceCorrectImage(py_trees.behaviour.Behaviour):
-    """
-    Face the correct image on the octagon based on role and items collected.
-    1 item → face 🧭 (survey) or 🛟 (rescue)
-    2+ items → face ⚒️ (survey) or 🆘 (rescue)
-    """
-
-    def __init__(self, name='FaceCorrectImage', timeout=20.0):
-        super().__init__(name)
-        self.timeout = timeout
-        self.start_time = None
-        self.blackboard = self.attach_blackboard_client()
-        self.blackboard.register_key(key=bb.CHOSEN_ROLE, access=py_trees.common.Access.READ)
-        self.blackboard.register_key(key=bb.OBJECTS_COLLECTED, access=py_trees.common.Access.READ)
-        self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
-        self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
-
-    def initialise(self):
-        import time
-        self.start_time = time.time()
-
-    def update(self):
-        import time
-        from hightide_interfaces.msg import ThrusterCommand
-        node = self.blackboard.get(bb.ROS_NODE)
-
-        if (time.time() - self.start_time) > self.timeout:
+        # Octagon not (yet) visible — advance a fixed distance via ZED odometry.
+        traveled = self._distance_traveled()
+        if traveled is not None and traveled >= self.advance_distance_m:
+            node.cmd_pub.publish(ThrusterCommand())
+            node.get_logger().info(
+                f'Advanced {traveled:.2f}m toward octagon (odometry) — stopping')
             return py_trees.common.Status.SUCCESS
 
-        role = self.blackboard.get(bb.CHOSEN_ROLE)
-        try:
-            items = self.blackboard.get(bb.OBJECTS_COLLECTED)
-        except KeyError:
-            items = 0
-
-        # Determine target symbol
-        if role == 'survey_repair':
-            target = 'symbol_compass' if items <= 1 else 'symbol_pickaxe'
-        else:
-            target = 'symbol_lifering' if items <= 1 else 'symbol_sos'
-
-        try:
-            detections = self.blackboard.get(bb.DETECTIONS)
-        except KeyError:
-            return py_trees.common.Status.RUNNING
-
-        if detections:
-            for det in detections.detections:
-                if det.class_name == target:
-                    img_w = detections.image_width or 1280
-                    # Yaw to center the symbol
-                    lateral_err = (det.center_x / img_w) - 0.5
-                    cmd = ThrusterCommand()
-                    cmd.header.stamp = node.get_clock().now().to_msg()
-                    cmd.yaw = lateral_err * 2.0  # Use yaw here to face the image
-                    node.cmd_pub.publish(cmd)
-
-                    if abs(lateral_err) < 0.1:
-                        node.get_logger().info(f'Facing correct image: {target}')
-                        return py_trees.common.Status.SUCCESS
-
-        # Slowly rotate to find the symbol
-        cmd = ThrusterCommand()
-        cmd.header.stamp = node.get_clock().now().to_msg()
-        cmd.yaw = 0.2  # Slow rotation
         node.cmd_pub.publish(cmd)
-
         return py_trees.common.Status.RUNNING
 
 
 class SurfaceInOctagon(py_trees.behaviour.Behaviour):
-    """Surface inside the octagon by setting depth to 0."""
+    """Surface inside the octagon by commanding depth setpoint to 0."""
 
-    def __init__(self, name='SurfaceInOctagon'):
+    def __init__(self, name='SurfaceInOctagon', timeout=30.0):
         super().__init__(name)
+        self.timeout = timeout
         self.start_time = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
@@ -146,15 +130,24 @@ class SurfaceInOctagon(py_trees.behaviour.Behaviour):
         msg = Float64()
         msg.data = 0.0  # Surface
         node.depth_pub.publish(msg)
+        node.get_logger().info('Surfacing in octagon')
 
     def update(self):
         import time
-        if (time.time() - self.start_time) > 30.0:
+        from std_msgs.msg import Float64
+        node = self.blackboard.get(bb.ROS_NODE)
+
+        if (time.time() - self.start_time) > self.timeout:
             return py_trees.common.Status.SUCCESS
+
+        # Keep commanding surface in case the setpoint is missed.
+        msg = Float64()
+        msg.data = 0.0
+        node.depth_pub.publish(msg)
 
         try:
             depth = self.blackboard.get(bb.CURRENT_DEPTH)
-            if depth < 0.3:  # Close to surface
+            if depth is not None and depth < 0.3:  # Close to surface
                 return py_trees.common.Status.SUCCESS
         except KeyError:
             pass
@@ -163,18 +156,15 @@ class SurfaceInOctagon(py_trees.behaviour.Behaviour):
 
 
 def create_octagon_subtree() -> py_trees.behaviour.Behaviour:
-    """Build the Task 5 (Octagon) behavior subtree."""
+    """Build the Task 5 (Octagon) behavior subtree — surface only (no claw)."""
     return py_trees.composites.Sequence(
         name='Task5_Octagon',
         memory=True,
         children=[
-            LogBehavior('Oct_Start', 'Starting Task 5: Octagon'),
-            WaitForDetection('FindOctagon', 'octagon', timeout=120.0),
+            LogBehavior('Oct_Start', 'Starting Task 5: Octagon (surface only)'),
             NavigateIntoOctagon('EnterOctagon'),
             StopMotion('StopInOctagon'),
-            FaceCorrectImage('FaceImage'),
-            StopMotion('StopFacing'),
-            WaitForDuration('StyleSpinDelay', duration_sec=5.0),
+            WaitForDuration('SettleInOctagon', duration_sec=2.0),
             SurfaceInOctagon('Surface'),
             LogBehavior('Oct_Done', 'Task 5 Octagon COMPLETE'),
         ],

@@ -1,27 +1,40 @@
 """
 Task 4: Deploy (Torpedoes) — Fire torpedoes through target board openings.
 
-Strategy: Find torpedo board via expanding square search. Approach to ~1m.
-Use Alt Hold to dial in Z-axis depth matching torpedo launcher to hole.
-Vision servo to center hole in frame. Fire.
+Hardware/model reality: the ffc model has no dedicated torpedo-board or
+sized-hole classes. The board is recognized by the role symbol printed on it
+('fire' for Survey & Repair, 'blood' for Search & Rescue), and every opening is
+the single 'circle' class (the labeling guide labels each hole, red ring
+included, as one 'circle'). We therefore distinguish the large vs small opening
+purely by bounding-box AREA — the larger circle is the big opening (role-icon
+side), the smaller circle is the small opening (vehicle side).
+
+Strategy: find the board via its symbol, approach to ~1m, vision-servo onto the
+larger circle and fire, then onto the smaller circle and fire.
 """
 
 import py_trees
-from .common import (WaitForDetection, WaitForDuration,
+from .common import (WaitForDetection, WaitForAnyDetection, WaitForDuration,
                      LogBehavior, StopMotion)
 from . import blackboard_keys as bb
+
+# Circles smaller than this fraction of the frame area are ignored as noise when
+# picking the "small" opening, so we don't servo onto a distant speck.
+MIN_CIRCLE_AREA_FRAC = 0.0005
 
 
 class AlignTorpedo(py_trees.behaviour.Behaviour):
     """
-    Align torpedo launcher with target hole using vision servo.
-    Adjusts depth to match launcher Z with hole Z, strafes to center.
+    Align the torpedo launcher with one opening using vision servo. Every hole
+    is a 'circle' detection, so `prefer` selects which one: 'large' picks the
+    biggest-area circle (the large opening), 'small' picks the smallest one that
+    is still plausibly a real hole. Adjusts depth to match launcher Z with the
+    hole, strafes to center.
     """
 
-    def __init__(self, name='AlignTorpedo', target_class='torpedo_hole_large',
-                 timeout=30.0):
+    def __init__(self, name='AlignTorpedo', prefer='large', timeout=30.0):
         super().__init__(name)
-        self.target_class = target_class
+        self.prefer = prefer
         self.timeout = timeout
         self.start_time = None
         self.aligned_since = None
@@ -48,18 +61,25 @@ class AlignTorpedo(py_trees.behaviour.Behaviour):
         except KeyError:
             return py_trees.common.Status.RUNNING
 
-        target = None
-        if detections:
-            for det in detections.detections:
-                if det.class_name == self.target_class and det.confidence > 0.4:
-                    target = det
-                    break
-
-        if target is None:
-            return py_trees.common.Status.RUNNING
-
         img_w = detections.image_width or 1280
         img_h = detections.image_height or 720
+
+        # Gather all hole ('circle') detections and pick large vs small by area.
+        circles = []
+        if detections:
+            min_area = MIN_CIRCLE_AREA_FRAC * img_w * img_h
+            for det in detections.detections:
+                if det.class_name == 'circle' and det.confidence > 0.4:
+                    if (det.width * det.height) >= min_area:
+                        circles.append(det)
+
+        if not circles:
+            return py_trees.common.Status.RUNNING
+
+        if self.prefer == 'large':
+            target = max(circles, key=lambda d: d.width * d.height)
+        else:
+            target = min(circles, key=lambda d: d.width * d.height)
 
         # Lateral alignment (strafe to center target horizontally)
         lateral_error = (target.center_x / img_w) - 0.5
@@ -84,7 +104,7 @@ class AlignTorpedo(py_trees.behaviour.Behaviour):
                 self.aligned_since = time.time()
             elif (time.time() - self.aligned_since) > 1.0:
                 node.get_logger().info(
-                    f'Aligned with {self.target_class}!')
+                    f'Aligned with {self.prefer} torpedo opening!')
                 return py_trees.common.Status.SUCCESS
         else:
             self.aligned_since = None
@@ -167,10 +187,12 @@ class ApproachBoard(py_trees.behaviour.Behaviour):
         except KeyError:
             return py_trees.common.Status.RUNNING
 
+        # The board is recognized by the role symbol printed on it. By this stage
+        # (bins already done) a visible fire/blood symbol is the torpedo board.
         board = None
         if detections:
             for det in detections.detections:
-                if det.class_name == 'torpedo_board':
+                if det.class_name in ('fire', 'blood'):
                     board = det
                     break
 
@@ -199,14 +221,14 @@ def create_torpedoes_subtree() -> py_trees.behaviour.Behaviour:
         memory=True,
         children=[
             LogBehavior('Torp_Start', 'Starting Task 4: Torpedoes'),
-            WaitForDetection('FindTorpedoBoard', 'torpedo_board', timeout=90.0),
+            WaitForAnyDetection('FindTorpedoBoard', {'fire', 'blood'}, timeout=90.0),
             ApproachBoard('ApproachBoard', target_distance_m=1.0),
             StopMotion('StopBeforeAlign1'),
-            AlignTorpedo('AlignLargeHole', 'torpedo_hole_large'),
+            AlignTorpedo('AlignLargeHole', prefer='large'),
             WaitForDuration('SteadyAim1', duration_sec=2.0),
             FireTorpedo('FireTorpedo1', tube_id=1),
             WaitForDuration('WaitAfterFire1', duration_sec=2.0),
-            AlignTorpedo('AlignSmallHole', 'torpedo_hole_small'),
+            AlignTorpedo('AlignSmallHole', prefer='small'),
             WaitForDuration('SteadyAim2', duration_sec=2.0),
             FireTorpedo('FireTorpedo2', tube_id=2),
             StopMotion('StopAfterTorpedoes'),

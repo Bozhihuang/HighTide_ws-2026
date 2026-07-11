@@ -33,11 +33,16 @@ class TestBehaviorLogic:
     """Test logical non-ROS components of behaviors."""
 
     def test_identify_gate_role_logic(self):
-        """Test the logic for determining role from gate symbols."""
-        # Using a mock of the behavior's update method logic
+        """Test the logic for determining role from gate symbols.
+
+        Symbol sets mirror gate.ROLE_SYMBOLS for the ffc model: survey is
+        compass/hammer_and_wrench, rescue is sos.
+        """
+        from hightide_mission.behaviors.gate import ROLE_SYMBOLS
+
         def mock_identify_role(detections_list):
-            survey_symbols = {'symbol_compass', 'symbol_pickaxe'}
-            rescue_symbols = {'symbol_lifering', 'symbol_sos'}
+            survey_symbols = ROLE_SYMBOLS['survey_repair']
+            rescue_symbols = ROLE_SYMBOLS['search_rescue']
 
             for det in detections_list:
                 if det['class_name'] in survey_symbols and det['confidence'] > 0.5:
@@ -48,19 +53,19 @@ class TestBehaviorLogic:
             return None, py_trees.common.Status.RUNNING
 
         # Test survey match
-        dets1 = [{'class_name': 'gate', 'confidence': 0.9}, 
-                 {'class_name': 'symbol_compass', 'confidence': 0.8}]
+        dets1 = [{'class_name': 'hammer_and_wrench', 'confidence': 0.7},
+                 {'class_name': 'compass', 'confidence': 0.8}]
         role, status = mock_identify_role(dets1)
         assert role == 'survey_repair'
         assert status == py_trees.common.Status.SUCCESS
 
         # Test rescue match
-        dets2 = [{'class_name': 'symbol_sos', 'confidence': 0.6}]
+        dets2 = [{'class_name': 'sos', 'confidence': 0.6}]
         role, status = mock_identify_role(dets2)
         assert role == 'search_rescue'
-        
+
         # Test low confidence ignore
-        dets3 = [{'class_name': 'symbol_compass', 'confidence': 0.3}]
+        dets3 = [{'class_name': 'compass', 'confidence': 0.3}]
         role, status = mock_identify_role(dets3)
         assert role is None
         assert status == py_trees.common.Status.RUNNING

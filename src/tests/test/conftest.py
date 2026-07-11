@@ -64,7 +64,7 @@ def make_thruster_command(surge=0.0, sway=0.0, heave=0.0,
     return msg
 
 
-def make_detection(class_id=0, class_name='gate', confidence=0.9,
+def make_detection(class_id=0, class_name='compass', confidence=0.9,
                    x_min=100.0, y_min=100.0, x_max=200.0, y_max=200.0,
                    depth_m=-1.0):
     """Build a Detection message."""

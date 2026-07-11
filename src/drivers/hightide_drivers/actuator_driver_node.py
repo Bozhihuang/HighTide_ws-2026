@@ -19,19 +19,21 @@ class ActuatorDriverNode(Node):
     def __init__(self):
         super().__init__('actuator_driver_node')
 
-        self.declare_parameter('torpedo_1_relay', 0.0)
-        self.declare_parameter('torpedo_2_relay', 1.0)
-        self.declare_parameter('dropper_1_relay', 2.0)
-        self.declare_parameter('dropper_2_relay', 3.0)
+        self.declare_parameter('torpedo_1_pin', 0.0)
+        self.declare_parameter('torpedo_2_pin', 1.0)
+        self.declare_parameter('dropper_1_pin', 2.0)
+        self.declare_parameter('dropper_2_pin', 3.0)
         self.declare_parameter('pulse_duration_ms', 500)
+        self.declare_parameter('fire_max_attempts', 4)
 
         self.relays = {
-            'torpedo_1': float(self.get_parameter('torpedo_1_relay').value),
-            'torpedo_2': float(self.get_parameter('torpedo_2_relay').value),
-            'dropper_1': float(self.get_parameter('dropper_1_relay').value),
-            'dropper_2': float(self.get_parameter('dropper_2_relay').value),
+            'torpedo_1': float(self.get_parameter('torpedo_1_pin').value),
+            'torpedo_2': float(self.get_parameter('torpedo_2_pin').value),
+            'dropper_1': float(self.get_parameter('dropper_1_pin').value),
+            'dropper_2': float(self.get_parameter('dropper_2_pin').value),
         }
         self.pulse_ms = self.get_parameter('pulse_duration_ms').value
+        self.fire_max_attempts = self.get_parameter('fire_max_attempts').value
 
         self.torpedoes_fired = {1: False, 2: False}
         self.markers_dropped = {1: False, 2: False}
@@ -107,21 +109,28 @@ class ActuatorDriverNode(Node):
         if relay_pin is None:
             return False
 
-        self.get_logger().info(f'Actuating {name} (Relay {relay_pin}) for {self.pulse_ms}ms')
+        for attempt in range(1, self.fire_max_attempts + 1):
+            self.get_logger().info(
+                f'Actuating {name} (Relay {relay_pin}) for {self.pulse_ms}ms '
+                f'(attempt {attempt}/{self.fire_max_attempts})')
 
-        success_on = self._set_relay(relay_pin, 1.0)
-        if not success_on:
-            self.get_logger().error(f'Failed to turn ON {name}')
-            return False
+            success_on = self._set_relay(relay_pin, 1.0)
+            if not success_on:
+                self.get_logger().error(f'Failed to turn ON {name} (attempt {attempt})')
+                continue
 
-        pytime.sleep(self.pulse_ms / 1000.0)
+            pytime.sleep(self.pulse_ms / 1000.0)
 
-        success_off = self._set_relay(relay_pin, 0.0)
-        if not success_off:
-            self.get_logger().error(f'Failed to turn OFF {name}')
-            return False
+            success_off = self._set_relay(relay_pin, 0.0)
+            if not success_off:
+                self.get_logger().error(f'Failed to turn OFF {name} (attempt {attempt})')
+                continue
 
-        return True
+            return True
+
+        self.get_logger().error(
+            f'{name} failed after {self.fire_max_attempts} attempts')
+        return False
 
     def _fire_torpedo(self, request, response):
         tube_id = request.tube_id
@@ -129,12 +138,6 @@ class ActuatorDriverNode(Node):
         if tube_id not in (1, 2):
             response.success = False
             response.message = f'Invalid tube_id: {tube_id} (must be 1 or 2)'
-            return response
-
-        if self.torpedoes_fired[tube_id]:
-            response.success = False
-            response.message = f'Torpedo {tube_id} already fired!'
-            self.get_logger().warn(response.message)
             return response
 
         pin_name = f'torpedo_{tube_id}'
@@ -154,12 +157,6 @@ class ActuatorDriverNode(Node):
         if dropper_id not in (1, 2):
             response.success = False
             response.message = f'Invalid dropper_id: {dropper_id} (must be 1 or 2)'
-            return response
-
-        if self.markers_dropped[dropper_id]:
-            response.success = False
-            response.message = f'Marker {dropper_id} already dropped!'
-            self.get_logger().warn(response.message)
             return response
 
         pin_name = f'dropper_{dropper_id}'

@@ -108,6 +108,49 @@ class WaitForDetection(py_trees.behaviour.Behaviour):
         return py_trees.common.Status.RUNNING
 
 
+class WaitForAnyDetection(py_trees.behaviour.Behaviour):
+    """
+    Like WaitForDetection but succeeds on ANY of several class names. Used now
+    that structural objects (the gate, a bin, the torpedo board) have no
+    dedicated class in the ffc model and are instead recognized by whichever
+    role symbol sits on them (e.g. the gate is 'seen' via compass/hammer/sos).
+    Writes the first matching detection to TARGET_DETECTION.
+    """
+
+    def __init__(self, name, target_classes, confidence_threshold=0.5, timeout=30.0):
+        super().__init__(name)
+        self.target_classes = set(target_classes)
+        self.conf_thresh = confidence_threshold
+        self.timeout = timeout
+        self.start_time = None
+        self.blackboard = self.attach_blackboard_client()
+        self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.TARGET_DETECTION, access=py_trees.common.Access.WRITE)
+
+    def initialise(self):
+        self.start_time = pytime.time()
+
+    def update(self):
+        if (pytime.time() - self.start_time) > self.timeout:
+            return py_trees.common.Status.FAILURE
+
+        try:
+            detections = self.blackboard.get(bb.DETECTIONS)
+        except KeyError:
+            return py_trees.common.Status.RUNNING
+
+        if detections is None:
+            return py_trees.common.Status.RUNNING
+
+        for det in detections.detections:
+            if (det.class_name in self.target_classes and
+                    det.confidence >= self.conf_thresh):
+                self.blackboard.set(bb.TARGET_DETECTION, det)
+                return py_trees.common.Status.SUCCESS
+
+        return py_trees.common.Status.RUNNING
+
+
 class CheckDetectionVisible(py_trees.behaviour.Behaviour):
     """Condition: checks if a class is currently visible in detections."""
 
@@ -173,4 +216,90 @@ class StopMotion(py_trees.behaviour.Behaviour):
     def update(self):
         node = self.blackboard.get(bb.ROS_NODE)
         node.cmd_pub.publish(ThrusterCommand())
+        return py_trees.common.Status.SUCCESS
+
+
+class CallTriggerService(py_trees.behaviour.Behaviour):
+    """
+    Call a std_srvs/Trigger service once and report the result.
+
+    Used for the style maneuvers (/hightide/yaw_spin, /hightide/barrel_roll),
+    which are long-running blocking services living in their own nodes — so the
+    call is async and this behavior ticks RUNNING until the future resolves.
+    In best_effort mode a missing service or a failed response still returns
+    SUCCESS so a bonus maneuver never aborts the mission.
+    """
+
+    def __init__(self, name, service_name, wait_timeout=1.0, best_effort=True):
+        super().__init__(name)
+        self.service_name = service_name
+        self.wait_timeout = wait_timeout
+        self.best_effort = best_effort
+        self.blackboard = self.attach_blackboard_client()
+        self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
+        self.client = None
+        self.future = None
+
+    def initialise(self):
+        from std_srvs.srv import Trigger
+        node = self.blackboard.get(bb.ROS_NODE)
+        self.client = node.create_client(Trigger, self.service_name)
+        self.future = None
+
+    def _finish(self, ok):
+        if ok or self.best_effort:
+            return py_trees.common.Status.SUCCESS
+        return py_trees.common.Status.FAILURE
+
+    def update(self):
+        from std_srvs.srv import Trigger
+        node = self.blackboard.get(bb.ROS_NODE)
+
+        if not self.client.wait_for_service(timeout_sec=self.wait_timeout):
+            node.get_logger().warn(f'{self.service_name} not available')
+            return self._finish(False)
+
+        if self.future is None:
+            self.future = self.client.call_async(Trigger.Request())
+            return py_trees.common.Status.RUNNING
+
+        if not self.future.done():
+            return py_trees.common.Status.RUNNING
+
+        result = self.future.result()
+        ok = bool(result and result.success)
+        node.get_logger().info(f'{self.service_name} -> {"ok" if ok else "failed"}')
+        return self._finish(ok)
+
+
+class RecordPose(py_trees.behaviour.Behaviour):
+    """
+    Snapshot the current odometry pose into a blackboard key so it can be
+    navigated back to later (used to remember the gate position for Return
+    Home, since we have no acoustic pinger to home on).
+    """
+
+    def __init__(self, name, dest_key):
+        super().__init__(name)
+        self.dest_key = dest_key
+        self.blackboard = self.attach_blackboard_client()
+        self.blackboard.register_key(key=bb.CURRENT_POSE, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=self.dest_key, access=py_trees.common.Access.WRITE)
+        self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
+
+    def update(self):
+        node = self.blackboard.get(bb.ROS_NODE)
+        try:
+            pose = self.blackboard.get(bb.CURRENT_POSE)
+        except KeyError:
+            pose = None
+
+        self.blackboard.set(self.dest_key, pose)
+        if pose is not None:
+            p = pose.pose.pose.position
+            node.get_logger().info(
+                f'Recorded {self.dest_key}: x={p.x:.2f} y={p.y:.2f}')
+        else:
+            node.get_logger().warn(
+                f'No odometry available to record {self.dest_key}')
         return py_trees.common.Status.SUCCESS

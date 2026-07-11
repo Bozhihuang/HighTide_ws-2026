@@ -10,19 +10,16 @@ from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 from hightide_interfaces.msg import DetectionArray
 
-# Color mapping by class category
+# Color mapping by class (ffc 8-class model). Green = role symbols, cyan =
+# slalom red poles, magenta = octagon buoy, red/orange = bin+torpedo symbols,
+# yellow = torpedo holes.
 CATEGORY_COLORS = {
-    'gate': (0, 255, 0), 'gate_divider': (0, 255, 0),
-    'symbol_compass': (0, 255, 0), 'symbol_pickaxe': (0, 255, 0),
-    'symbol_lifering': (0, 255, 0), 'symbol_sos': (0, 255, 0),
-    'pipe_red': (0, 255, 255), 'pipe_white': (0, 255, 255),
-    'bin': (255, 200, 0), 'symbol_fire': (0, 100, 255),
-    'symbol_blood': (0, 0, 255),
-    'torpedo_board': (0, 0, 255), 'torpedo_hole_large': (0, 0, 255),
-    'torpedo_hole_small': (0, 0, 255),
-    'octagon': (255, 0, 255), 'table': (255, 0, 255),
-    'basket': (255, 0, 255),
-    'path_marker': (0, 165, 255),
+    'compass': (0, 255, 0), 'hammer_and_wrench': (0, 255, 0),
+    'sos': (0, 255, 0),
+    'slalom': (0, 255, 255),
+    'buoy': (255, 0, 255),
+    'fire': (0, 100, 255), 'blood': (0, 0, 255),
+    'circle': (0, 255, 255),
 }
 DEFAULT_COLOR = (200, 200, 200)
 
