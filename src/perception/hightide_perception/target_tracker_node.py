@@ -36,6 +36,10 @@ class TrackedTarget:
         self.center_x = detection.center_x
         self.center_y = detection.center_y
         self.depth_m = -1.0
+        # Segmentation extras (0.0 / [] for detect-only models). Carried through
+        # so mission/nav get the mask centroid, area, and contour, not just bbox.
+        self.mask_area = detection.mask_area
+        self.mask_polygon = list(detection.mask_polygon)
         self.last_seen = pytime.time()
         self.hit_count = 1 # number of frames this target has been detected as something
 
@@ -51,9 +55,14 @@ class TrackedTarget:
         self.bbox[1] = alpha * detection.y_min + (1 - alpha) * self.bbox[1]
         self.bbox[2] = alpha * detection.x_max + (1 - alpha) * self.bbox[2]
         self.bbox[3] = alpha * detection.y_max + (1 - alpha) * self.bbox[3]
-        # update center coordinates based on new bounding box
-        self.center_x = (self.bbox[0] + self.bbox[2]) / 2.0
-        self.center_y = (self.bbox[1] + self.bbox[3]) / 2.0
+        # EMA the detection-provided center (which is the MASK centroid for seg
+        # models, bbox center for detect models) rather than recomputing from
+        # the bbox — this preserves the more-accurate segmentation centroid.
+        self.center_x = alpha * detection.center_x + (1 - alpha) * self.center_x
+        self.center_y = alpha * detection.center_y + (1 - alpha) * self.center_y
+        # Mask area smooths; the polygon just tracks the latest frame.
+        self.mask_area = alpha * detection.mask_area + (1 - alpha) * self.mask_area
+        self.mask_polygon = list(detection.mask_polygon)
         # update last seen time and hit count
         self.last_seen = pytime.time()
         self.hit_count += 1
@@ -256,6 +265,8 @@ class TargetTrackerNode(Node):
             det.depth_m = track.depth_m
             det.width = track.bbox[2] - track.bbox[0]
             det.height = track.bbox[3] - track.bbox[1]
+            det.mask_area = track.mask_area
+            det.mask_polygon = track.mask_polygon
             out_msg.detections.append(det)
 
         self.tracked_pub.publish(out_msg)

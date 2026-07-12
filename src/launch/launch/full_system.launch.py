@@ -26,7 +26,7 @@ def generate_launch_description():
     # the params file, so an empty default would clobber the yaml value and drop
     # the detector into mock mode. Override at launch with yolo_engine:=/path.
     engine_arg = DeclareLaunchArgument('yolo_engine',
-                                       default_value='/home/user/models/ffc_yolov8.engine',
+                                       default_value='/home/user/models/ffc_seg.engine',
                                        description='Path to TensorRT engine file')
     
     # Defaults the argument to your verified working tether connection parameter

@@ -4,6 +4,7 @@
 
 
 import cv2
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
@@ -71,21 +72,30 @@ class DetectionVizNode(Node):
         cv2.line(frame, (cx, cy - 20), (cx, cy + 20), (0, 255, 255), 1)
 
         if self.latest_detections:
+            overlay = frame.copy()   # segmentation masks blended in at the end
             for det in self.latest_detections.detections:
-    
+
                 # for each detection(which follows detection.msg format),
                 # set color based on class name, default to gray if not found
                 color = CATEGORY_COLORS.get(det.class_name, DEFAULT_COLOR)
+                # shade the segmentation mask (seg models only; empty otherwise)
+                if det.mask_polygon:
+                    pts = np.array(det.mask_polygon, dtype=np.int32).reshape(-1, 2)
+                    cv2.fillPoly(overlay, [pts], color)
+                    cv2.polylines(frame, [pts], True, color, 1)
                 # draw bounding box
                 x1, y1 = int(det.x_min), int(det.y_min)
                 x2, y2 = int(det.x_max), int(det.y_max)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                # mark the (mask) centroid the mission actually steers toward
+                cv2.circle(frame, (int(det.center_x), int(det.center_y)), 3, color, -1)
                 # draw label above bounding box with class name, confidence, and depth if more than 0
                 label = f'{det.class_name} {det.confidence:.2f}'
                 if det.depth_m > 0:
                     label += f' {det.depth_m:.1f}m'
                 cv2.putText(frame, label, (x1, y1 - 8),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
+            cv2.addWeighted(overlay, 0.35, frame, 0.65, 0, frame)
             # draw number of detections on top left corner of image
             cv2.putText(frame,
                         f'Detections: {len(self.latest_detections.detections)}',

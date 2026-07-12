@@ -33,14 +33,21 @@ mode_manager_node:
 # ============== PERCEPTION ==============
 yolo_detector_node:
   ros__parameters:
-    # Front-facing-camera (ffc) 8-class model. Export the .pt to a TensorRT
-    # engine on the ZED Box first:  yolo export model=ffc.pt format=engine imgsz=640
-    # The class list must match hightide_perception.CLASS_NAMES (see that file).
-    engine_path: '/home/user/models/ffc_yolov8.engine'
+    # Front-facing-camera (ffc) 8-class instance-SEGMENTATION model (YOLO*-seg).
+    # Export the .pt to a TensorRT engine ON THE ZED BOX first (engines aren't
+    # portable across TensorRT/GPU versions):
+    #   python3 src/perception/scripts/export_yolo_seg_engine.py \
+    #       --pt ffc_seg.pt --out /home/user/models/ffc_seg.engine --imgsz 640 --half
+    # (equivalently `yolo export model=ffc_seg.pt format=engine imgsz=640` —
+    # same command as a detect model, but do NOT pass nms=True or the mask
+    # coefficients are stripped.) The class list must match
+    # hightide_perception.CLASS_NAMES (see that file).
+    engine_path: '/home/user/models/ffc_seg.engine'
     confidence_threshold: 0.5
     nms_threshold: 0.45
     input_width: 640
     input_height: 640
+    mask_threshold: 0.5           # sigmoid cutoff for turning proto masks into pixels
     publish_viz: true
 
 target_tracker_node:
