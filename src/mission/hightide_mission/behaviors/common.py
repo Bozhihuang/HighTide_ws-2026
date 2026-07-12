@@ -75,6 +75,110 @@ def distribute_timeout(total, weights):
     return {n: total * (float(weights[n]) / s) for n in names}
 
 
+class DeadReckonTransit(py_trees.behaviour.Behaviour):
+    """Blind inter-task transit across open water using ZED odometry as a ruler.
+
+    Course props are far apart, so "creep forward until the next prop appears"
+    is too slow and misses anything off the current axis. This drives a fixed
+    BODY-FRAME (forward, lateral) offset from where the leg started — heading
+    held by the FOG, so it strafes rather than turns — then hands off to the
+    task's own visual search to acquire the prop.
+
+    forward_m: +ahead in the vehicle's held heading.
+    lateral_m: +right in that frame (course A/D mirror flips the sign upstream —
+               see mission_node.course_sign).
+
+    Best-effort by design: succeeds when within pos_tol of the target, on
+    timeout, or immediately if there's no odometry / the offset is zero — it must
+    never stall the mission (the global supervisor is the only hard stop).
+    """
+
+    def __init__(self, name='DeadReckonTransit', forward_m=0.0, lateral_m=0.0,
+                 speed=0.35, pos_tol=0.4, timeout=45.0):
+        super().__init__(name)
+        self.forward_m = forward_m
+        self.lateral_m = lateral_m
+        self.speed = speed
+        self.pos_tol = pos_tol
+        self.timeout = timeout
+        self.start_time = None
+        self.target = None          # world-frame (x, y) goal, set in initialise
+        self._locked_heading = None
+        self.blackboard = self.attach_blackboard_client()
+        self.blackboard.register_key(key=bb.CURRENT_POSE, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.CURRENT_HEADING, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
+
+    def initialise(self):
+        import math
+        self.start_time = pytime.time()
+        self.target = None
+        node = self.blackboard.get(bb.ROS_NODE)
+        self._locked_heading = lock_heading(node)
+        try:
+            pose = self.blackboard.get(bb.CURRENT_POSE)
+            yaw = self.blackboard.get(bb.CURRENT_HEADING)
+        except KeyError:
+            pose = yaw = None
+        if pose is None or yaw is None:
+            return  # no odometry — update() will best-effort succeed
+        # Body-frame (forward=surge, lateral=sway) → world displacement. This is
+        # the exact inverse of update()'s world→body decomposition, so a lateral
+        # offset commands the matching sway sign (same +sway convention as the
+        # rest of the stack — unverified in-pool, but internally consistent).
+        cos_y, sin_y = math.cos(yaw), math.sin(yaw)
+        wx = self.forward_m * cos_y - self.lateral_m * sin_y
+        wy = self.forward_m * sin_y + self.lateral_m * cos_y
+        p = pose.pose.pose.position
+        self.target = (p.x + wx, p.y + wy)
+        node.get_logger().info(
+            f'{self.name}: transit fwd={self.forward_m:.1f}m lat={self.lateral_m:.1f}m')
+
+    def update(self):
+        import math
+        from hightide_interfaces.msg import ThrusterCommand
+        node = self.blackboard.get(bb.ROS_NODE)
+
+        # Zero offset, no odom, or drift never resolved → don't stall the mission.
+        if self.target is None:
+            return py_trees.common.Status.SUCCESS
+        if (pytime.time() - self.start_time) > self.timeout:
+            node.get_logger().warn(f'{self.name}: transit timed out — proceeding')
+            node.cmd_pub.publish(ThrusterCommand())
+            return py_trees.common.Status.SUCCESS
+
+        try:
+            current = self.blackboard.get(bb.CURRENT_POSE)
+            yaw = self.blackboard.get(bb.CURRENT_HEADING)
+        except KeyError:
+            current = yaw = None
+        if current is None or yaw is None:
+            return py_trees.common.Status.SUCCESS  # lost odom mid-leg — best effort
+
+        pos = current.pose.pose.position
+        dx = self.target[0] - pos.x
+        dy = self.target[1] - pos.y
+        dist = math.hypot(dx, dy)
+        if dist < self.pos_tol:
+            node.cmd_pub.publish(ThrusterCommand())
+            node.get_logger().info(f'{self.name}: reached transit target')
+            return py_trees.common.Status.SUCCESS
+
+        # World error → body frame (surge ahead, +sway right), matching the
+        # waypoint navigator's decomposition; heading held by the FOG.
+        cos_y, sin_y = math.cos(yaw), math.sin(yaw)
+        surge = dx * cos_y + dy * sin_y
+        sway = -dx * sin_y + dy * cos_y
+        norm = max(dist, 1e-3)
+        cmd = ThrusterCommand()
+        cmd.header.stamp = node.get_clock().now().to_msg()
+        cmd.surge = max(-self.speed, min(self.speed, self.speed * surge / norm))
+        cmd.sway = max(-self.speed, min(self.speed, self.speed * sway / norm))
+        cmd.yaw = yaw_hold(node, self._locked_heading)
+        node.cmd_pub.publish(cmd)
+        return py_trees.common.Status.RUNNING
+
+
 class PublishThrusterCommand(py_trees.behaviour.Behaviour):
     """Publish a single ThrusterCommand and succeed."""
 

@@ -52,7 +52,8 @@ from hightide_mission.behaviors.bins import create_bins_subtree
 from hightide_mission.behaviors.torpedoes import create_torpedoes_subtree
 from hightide_mission.behaviors.octagon import create_octagon_subtree
 from hightide_mission.behaviors.return_home import create_return_home_subtree
-from hightide_mission.behaviors.common import LogBehavior, CallTriggerService
+from hightide_mission.behaviors.common import (
+    LogBehavior, CallTriggerService, DeadReckonTransit)
 
 
 class MissionNode(Node):
@@ -95,6 +96,20 @@ class MissionNode(Node):
         self.declare_parameter('octagon_settle_sec', 2.0)          # fixed settle (not scaled)
         self.declare_parameter('octagon_surface_depth_m', 0.3)     # "at surface" threshold
 
+        # ---- Course selection + inter-mission dead-reckon transits ----
+        # Courses A and D are DIFFERENT layouts (not mirror images), so each has
+        # its OWN transit distances. `course` selects which set is used at run
+        # time; the other set is ignored.
+        self.declare_parameter('course', 'A')                      # 'A' or 'D'
+        # Props are far apart, so between tasks we blind-drive a fixed body-frame
+        # (forward, lateral) offset on ZED odometry, THEN let the next task's
+        # visual search acquire. Metres; lateral is +right. 0.0 = no transit
+        # (pure creep-and-search, the old behavior). MEASURE PER COURSE IN POOL.
+        for course in ('A', 'D'):
+            for leg in ('to_slalom', 'to_bins', 'to_torpedoes', 'to_octagon'):
+                self.declare_parameter(f'transit_{course}_{leg}_forward_m', 0.0)
+                self.declare_parameter(f'transit_{course}_{leg}_lateral_m', 0.0)
+
         self.mission_depth = self.get_parameter('mission_depth_m').value
         self.mission_timeout = self.get_parameter('mission_timeout_sec').value
         self.tick_rate = self.get_parameter('tick_rate').value
@@ -107,6 +122,12 @@ class MissionNode(Node):
         self.torpedoes_timeout = self.get_parameter('torpedoes_timeout_sec').value
         self.octagon_timeout = self.get_parameter('octagon_timeout_sec').value
         self.return_home_timeout = self.get_parameter('return_home_timeout_sec').value
+
+        # Selected course (A/D) — picks which transit distance set is used.
+        self.course = str(self.get_parameter('course').value).upper()
+        if self.course not in ('A', 'D'):
+            self.get_logger().warn(f"Unknown course '{self.course}' — defaulting to A")
+            self.course = 'A'
 
         # Octagon knobs
         self.octagon_params = dict(
@@ -239,16 +260,29 @@ class MissionNode(Node):
             return py_trees.decorators.FailureIsSuccess(
                 name=f'Try_{subtree.name}', child=subtree)
 
+        # A blind dead-reckon leg to cross the open water into the NEXT prop's
+        # vicinity before that task's visual search runs. Distances come from
+        # ROS params (0.0 = disabled); course A/D mirrors the lateral sign.
+        def transit(name, leg):
+            fwd = self.get_parameter(f'transit_{self.course}_{leg}_forward_m').value
+            lat = self.get_parameter(f'transit_{self.course}_{leg}_lateral_m').value
+            return DeadReckonTransit(name, forward_m=fwd, lateral_m=lat)
+
         tasks = py_trees.composites.Sequence(
             name='CompetitionTasks',
             memory=True,
             children=[
                 resilient(create_gate_subtree(total_timeout=self.gate_timeout)),
+                transit('Transit_Slalom', 'to_slalom'),
                 resilient(create_slalom_subtree(total_timeout=self.slalom_timeout)),
+                transit('Transit_Bins', 'to_bins'),
                 resilient(create_bins_subtree(total_timeout=self.bins_timeout)),
+                transit('Transit_Torpedoes', 'to_torpedoes'),
                 resilient(create_torpedoes_subtree(total_timeout=self.torpedoes_timeout)),
+                transit('Transit_Octagon', 'to_octagon'),
                 resilient(create_octagon_subtree(total_timeout=self.octagon_timeout,
                                                  **self.octagon_params)),
+                # Octagon → gate is handled by Return Home's own dead-reckon.
                 resilient(create_return_home_subtree(total_timeout=self.return_home_timeout)),
             ],
         )

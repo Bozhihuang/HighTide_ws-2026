@@ -6,6 +6,53 @@ mission_node:
     tick_rate: 10.0                # Behavior tree tick rate (Hz)
     chosen_role: 'survey_repair'   # Pre-race coin-flip choice: survey_repair | search_rescue
 
+    # Per-mission time budgets (s). Each subtree splits its budget across its own
+    # timeout-bearing behaviors, preserving tuned ratios. Sum can exceed
+    # mission_timeout_sec — the global cap wins, later tasks get squeezed.
+    gate_timeout_sec: 240.0
+    slalom_timeout_sec: 240.0
+    bins_timeout_sec: 240.0
+    torpedoes_timeout_sec: 240.0
+    octagon_timeout_sec: 240.0
+    return_home_timeout_sec: 240.0
+
+    # Octagon (Task 5) knobs — tune in-water without code edits.
+    octagon_advance_distance_m: 3.0   # blind odom advance if no visual cue
+    octagon_surge: 0.3
+    octagon_buoy_fill_frac: 0.7       # buoy box spans this frac of frame => inside
+    octagon_table_fill_frac: 0.6      # under-octagon table spans this => inside
+    octagon_table_class: 'octagon_table'
+    octagon_confidence: 0.4
+    octagon_settle_sec: 2.0
+    octagon_surface_depth_m: 0.3
+
+    # ---- Course + inter-mission dead-reckon transits ----
+    # Courses A and D are DIFFERENT layouts. Fill in BOTH sets; `course` picks
+    # which one runs. Blind-drive a body-frame (forward, lateral) offset on ZED
+    # odometry between tasks, THEN the next task visually acquires. Metres;
+    # lateral +right. 0.0 = disabled (creep-and-search). >>> MEASURE IN POOL. <<<
+    course: 'A'                       # 'A' or 'D'
+
+    # --- Course A distances ---
+    transit_A_to_slalom_forward_m: 0.0
+    transit_A_to_slalom_lateral_m: 0.0
+    transit_A_to_bins_forward_m: 0.0
+    transit_A_to_bins_lateral_m: 0.0
+    transit_A_to_torpedoes_forward_m: 0.0
+    transit_A_to_torpedoes_lateral_m: 0.0
+    transit_A_to_octagon_forward_m: 0.0
+    transit_A_to_octagon_lateral_m: 0.0
+
+    # --- Course D distances ---
+    transit_D_to_slalom_forward_m: 0.0
+    transit_D_to_slalom_lateral_m: 0.0
+    transit_D_to_bins_forward_m: 0.0
+    transit_D_to_bins_lateral_m: 0.0
+    transit_D_to_torpedoes_forward_m: 0.0
+    transit_D_to_torpedoes_lateral_m: 0.0
+    transit_D_to_octagon_forward_m: 0.0
+    transit_D_to_octagon_lateral_m: 0.0
+
 # ============== CONTROL ==============
 rc_override_node:
   ros__parameters:
