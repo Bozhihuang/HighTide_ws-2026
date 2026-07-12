@@ -22,6 +22,12 @@ def generate_launch_description():
                                     description='Run the autonomous mission tree')
     # Mission depth/timeout are configured in params.yaml (mission_node:
     # mission_depth_m / mission_timeout_sec), not as launch args.
+    # Default must match params.yaml's engine_path — this dict is applied AFTER
+    # the params file, so an empty default would clobber the yaml value and drop
+    # the detector into mock mode. Override at launch with yolo_engine:=/path.
+    engine_arg = DeclareLaunchArgument('yolo_engine',
+                                       default_value='/home/user/models/ffc_rs_26.engine',
+                                       description='Path to TensorRT engine file')
     # Detector model — runs through the Ultralytics API (yolo_pt_detector_node),
     # which handles both a .pt checkpoint and an Ultralytics .engine (and the
     # end2end (1,300,38) output + engine metadata header the raw node can't).
