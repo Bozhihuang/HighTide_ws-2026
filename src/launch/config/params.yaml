@@ -97,6 +97,21 @@ yolo_detector_node:
     mask_threshold: 0.5           # sigmoid cutoff for turning proto masks into pixels
     publish_viz: true
 
+# Ultralytics-API detector (.pt OR .engine) — the node full_system.launch.py
+# actually runs. model_path is supplied by the `yolo_model` launch arg (not here,
+# so it isn't clobbered). Switch to a .engine by pointing yolo_model at it — no
+# other change needed. A .pt is ~2-4x slower than a hand-tuned engine but needs
+# no build; fine for bring-up / pool testing.
+yolo_pt_detector_node:
+  ros__parameters:
+    image_topic: '/mavros/zed/rgb/color/rect/image'
+    confidence_threshold: 0.5
+    iou_threshold: 0.45           # Ultralytics NMS IoU
+    imgsz: 640                    # must match the model's training/export size
+    half: true                    # FP16 on GPU (set false for CPU / debugging)
+    device: '0'                   # CUDA index, or 'cpu'
+    publish_viz: true
+
 target_tracker_node:
   ros__parameters:
     max_tracking_age: 1.0         # seconds before track expires

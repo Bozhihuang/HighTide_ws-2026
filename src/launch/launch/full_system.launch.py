@@ -22,16 +22,14 @@ def generate_launch_description():
                                     description='Run the autonomous mission tree')
     # Mission depth/timeout are configured in params.yaml (mission_node:
     # mission_depth_m / mission_timeout_sec), not as launch args.
-    # Default must match params.yaml's engine_path — this dict is applied AFTER
-    # the params file, so an empty default would clobber the yaml value and drop
-    # the detector into mock mode. Override at launch with yolo_engine:=/path.
-    engine_arg = DeclareLaunchArgument('yolo_engine',
-                                       default_value='/home/user/models/ffc_rs_26.engine',
-                                       description='Path to TensorRT engine file')
-    # Detector model — runs through the Ultralytics API (yolo_pt_detector_node),
-    # which handles both a .pt checkpoint and an Ultralytics .engine (and the
-    # end2end (1,300,38) output + engine metadata header the raw node can't).
-    # Override at launch with yolo_model:=/path/to/model.{pt,engine}.
+    #
+    # Detector model — the whole perception front-end runs through
+    # yolo_pt_detector_node, which hands frames to the Ultralytics YOLO API. That
+    # loads a .pt checkpoint directly (no TensorRT build, so it sidesteps the
+    # engine version/OOM problems) OR an Ultralytics-exported .engine — same node,
+    # just point yolo_model at the other file. Everything else (conf, imgsz, half,
+    # device, image_topic) lives in params.yaml under yolo_pt_detector_node.
+    # Override the model at launch with yolo_model:=/path/to/model.{pt,engine}.
     model_arg = DeclareLaunchArgument('yolo_model',
                                       default_value='/home/user/models/ffc_rs_26.pt',
                                       description='Path to YOLO model (.pt or Ultralytics .engine)')
@@ -116,6 +114,9 @@ def generate_launch_description():
     # ============== PERCEPTION NODES ==============
     # The mission is blind without these two — mission_node consumes
     # /hightide/tracked_targets, which is tracker(detector(ZED RGB)) output.
+    # model_path comes from the yolo_model launch arg (applied AFTER the yaml so
+    # it wins); conf/imgsz/half/device/image_topic come from params.yaml
+    # (yolo_pt_detector_node section).
     yolo_detector = Node(
         package='hightide_perception',
         executable='yolo_pt_detector_node',
@@ -123,7 +124,7 @@ def generate_launch_description():
         output='screen',
         parameters=[
             global_config,
-            {'model_path': yolo_model, 'half': True},
+            {'model_path': yolo_model},
         ],
     )
 
