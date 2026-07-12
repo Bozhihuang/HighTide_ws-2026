@@ -9,8 +9,15 @@ reckoning when bin goes below camera FOV. Hover and drop markers.
 import math
 import py_trees
 from .common import (WaitForDetection, WaitForAnyDetection, WaitForDuration,
-                     LogBehavior, StopMotion, PublishDepthSetpoint)
+                     LogBehavior, StopMotion, PublishDepthSetpoint,
+                     SearchForDetection)
 from . import blackboard_keys as bb
+
+# Bins sit on the pool floor, so their symbols appear in the LOWER part of the
+# forward camera frame. The torpedo board carries the SAME fire/blood symbols
+# but hangs mid-water (appears near frame center). This normalized-y cutoff is
+# how the two tasks avoid latching onto each other's prop — tune in the pool.
+BIN_MIN_Y_FRAC = 0.40
 
 
 class IdentifyCorrectBin(py_trees.behaviour.Behaviour):
@@ -44,8 +51,10 @@ class IdentifyCorrectBin(py_trees.behaviour.Behaviour):
             return py_trees.common.Status.RUNNING
 
         if detections:
+            img_h = detections.image_height or 720
             for det in detections.detections:
-                if det.class_name == target_symbol and det.confidence > 0.4:
+                if (det.class_name == target_symbol and det.confidence > 0.4
+                        and (det.center_y / img_h) >= BIN_MIN_Y_FRAC):
                     self.blackboard.set(bb.TARGET_DETECTION, det)
                     node = self.blackboard.get(bb.ROS_NODE)
                     node.get_logger().info(
@@ -69,16 +78,20 @@ class NavigateOverBin(py_trees.behaviour.Behaviour):
     """
 
     def __init__(self, name='NavigateOverBin', surge_distance=2.0,
-                 surge=0.4, timeout=30.0):
+                 surge=0.4, timeout=30.0, floor_depth_m=2.5):
         super().__init__(name)
         self.surge_dist = surge_distance
         self.surge = surge
         self.timeout = timeout
+        # Venue pool-floor depth under the bins (m). Used to convert the ZED
+        # slant range into horizontal travel — set per venue (TRANSDEC ~3.8).
+        self.floor_depth_m = floor_depth_m
         self.start_time = None
         self.start_pos = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.TARGET_DETECTION, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.CURRENT_POSE, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.CURRENT_DEPTH, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
 
     def initialise(self):
@@ -86,11 +99,23 @@ class NavigateOverBin(py_trees.behaviour.Behaviour):
         self.start_time = time.time()
         self.start_pos = None
 
-        # Distance to cover = last-seen ZED range to the bin.
+        # Distance to cover = HORIZONTAL component of the last-seen ZED range.
+        # The camera looks forward and the bin is on the floor below, so the
+        # slant range overshoots the horizontal distance; correct for the
+        # height difference between our depth and the floor.
         try:
             det = self.blackboard.get(bb.TARGET_DETECTION)
             if det and det.depth_m > 0:
-                self.surge_dist = det.depth_m
+                try:
+                    current_depth = self.blackboard.get(bb.CURRENT_DEPTH) or 0.0
+                except KeyError:
+                    current_depth = 0.0
+                dz = max(0.0, self.floor_depth_m - current_depth)
+                slant = det.depth_m
+                horizontal = math.sqrt(max(slant * slant - dz * dz, 0.0))
+                # Never fully zero — if slant < dz the range was noisy/short;
+                # creep a little rather than declaring ourselves on top of it.
+                self.surge_dist = max(horizontal, 0.3)
         except KeyError:
             pass
 
@@ -140,11 +165,14 @@ class NavigateOverBin(py_trees.behaviour.Behaviour):
 
 
 class DropMarker(py_trees.behaviour.Behaviour):
-    """Drop a marker via the actuator driver service."""
+    """Drop a marker via the actuator driver service. Fails after `timeout`
+    so a dead actuator node can't stall the whole mission forever."""
 
-    def __init__(self, name='DropMarker', dropper_id=1):
+    def __init__(self, name='DropMarker', dropper_id=1, timeout=15.0):
         super().__init__(name)
         self.dropper_id = dropper_id
+        self.timeout = timeout
+        self.start_time = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.MARKERS_DROPPED, access=py_trees.common.Access.WRITE)
@@ -152,14 +180,21 @@ class DropMarker(py_trees.behaviour.Behaviour):
         self.future = None
 
     def initialise(self):
+        import time
         from hightide_interfaces.srv import DropMarker as DropMarkerSrv
         node = self.blackboard.get(bb.ROS_NODE)
         self.client = node.create_client(DropMarkerSrv, '/hightide/drop_marker')
         self.future = None
+        self.start_time = time.time()
 
     def update(self):
+        import time
         from hightide_interfaces.srv import DropMarker as DropMarkerSrv
         node = self.blackboard.get(bb.ROS_NODE)
+
+        if (time.time() - self.start_time) > self.timeout:
+            node.get_logger().error('DropMarker service timed out')
+            return py_trees.common.Status.FAILURE
 
         if not self.client.wait_for_service(timeout_sec=1.0):
             return py_trees.common.Status.RUNNING
@@ -193,8 +228,12 @@ def create_bins_subtree() -> py_trees.behaviour.Behaviour:
         children=[
             LogBehavior('Bins_Start', 'Starting Task 3: Bins'),
             # No path_marker / generic 'bin' class in the ffc model — the bins are
-            # recognized directly by their fire/blood symbols.
-            WaitForAnyDetection('FindBins', {'fire', 'blood'}, timeout=45.0),
+            # recognized directly by their fire/blood symbols. Creep-and-sweep
+            # search (course elements are never on a straight line), and only
+            # accept symbols low in frame so we don't latch the torpedo board
+            # (which carries the same symbols mid-water).
+            SearchForDetection('FindBins', {'fire', 'blood'}, timeout=45.0,
+                               surge=0.2, min_y_frac=BIN_MIN_Y_FRAC),
             IdentifyCorrectBin('IdentifyBin'),
             NavigateOverBin('NavigateOverBin1'),
             StopMotion('HoverOverBin1'),

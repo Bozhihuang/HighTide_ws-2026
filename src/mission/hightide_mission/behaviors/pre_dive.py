@@ -129,19 +129,28 @@ class SubmergeToDepth(py_trees.behaviour.Behaviour):
 
 
 class WaitForStable(py_trees.behaviour.Behaviour):
-    """Wait until vehicle velocities are low for 2 seconds."""
+    """Wait until vehicle velocities are low for 2 seconds. Succeeds
+    best-effort on timeout so missing odometry can't stall pre-dive forever
+    (the mission timeout would otherwise be the only way out)."""
 
-    def __init__(self, name='WaitForStable', velocity_threshold=0.1):
+    def __init__(self, name='WaitForStable', velocity_threshold=0.1,
+                 timeout=20.0):
         super().__init__(name)
         self.vel_thresh = velocity_threshold
+        self.timeout = timeout
+        self.start_time = None
         self.stable_since = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.CURRENT_POSE, access=py_trees.common.Access.READ)
 
     def initialise(self):
         self.stable_since = None
+        self.start_time = pytime.time()
 
     def update(self):
+        if (pytime.time() - self.start_time) > self.timeout:
+            return py_trees.common.Status.SUCCESS  # Best effort
+
         try:
             odom = self.blackboard.get(bb.CURRENT_POSE)
         except KeyError:

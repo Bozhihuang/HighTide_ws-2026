@@ -53,6 +53,10 @@ class YoloDetectorNode(Node):
         self.d_output = None
         self.h_input = None
         self.h_output = None
+        self.use_v3 = False        # TensorRT 10 tensor-name API vs legacy bindings
+        self.input_name = None
+        self.output_name = None
+        self.output_shape = None   # Captured at load; the binding API is gone in TRT 10
         self.num_classes = len(CLASS_NAMES)
 
         # Load TensorRT engine
@@ -78,32 +82,64 @@ class YoloDetectorNode(Node):
         self.get_logger().info('YOLO Detector Node started')
 
     def _load_engine(self):
-        """Load TensorRT engine and allocate buffers."""
+        """Load TensorRT engine and allocate buffers.
+
+        Supports both the legacy binding API (TRT 8.x) and the tensor-name
+        API — the binding API (num_bindings / get_binding_shape /
+        execute_async_v2) was removed in TensorRT 10, which is what JetPack 6
+        ships. self.use_v3 records which execution path to take.
+        """
         try:
             logger = trt.Logger(trt.Logger.WARNING)
             with open(self.engine_path, 'rb') as f:
                 runtime = trt.Runtime(logger)
                 self.engine = runtime.deserialize_cuda_engine(f.read())
             self.context = self.engine.create_execution_context()
+            self.use_v3 = not hasattr(self.engine, 'num_bindings')
 
-            # Allocate host and device memory for input/output
-            for binding in range(self.engine.num_bindings):
-                shape = self.engine.get_binding_shape(binding)
-                size = trt.volume(shape)
-                dtype = trt.nptype(self.engine.get_binding_dtype(binding))
+            if self.use_v3:
+                # TensorRT 10+ tensor-name API
+                for i in range(self.engine.num_io_tensors):
+                    name = self.engine.get_tensor_name(i)
+                    shape = self.engine.get_tensor_shape(name)
+                    size = trt.volume(shape)
+                    dtype = trt.nptype(self.engine.get_tensor_dtype(name))
 
-                host_mem = cuda.pagelocked_empty(size, dtype)
-                device_mem = cuda.mem_alloc(host_mem.nbytes)
+                    host_mem = cuda.pagelocked_empty(size, dtype)
+                    device_mem = cuda.mem_alloc(host_mem.nbytes)
 
-                if self.engine.binding_is_input(binding):
-                    self.h_input = host_mem
-                    self.d_input = device_mem
-                else:
-                    self.h_output = host_mem
-                    self.d_output = device_mem
+                    if self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
+                        self.input_name = name
+                        self.h_input = host_mem
+                        self.d_input = device_mem
+                    else:
+                        self.output_name = name
+                        self.output_shape = tuple(shape)
+                        self.h_output = host_mem
+                        self.d_output = device_mem
+            else:
+                # Legacy binding API (TensorRT 8.x)
+                for binding in range(self.engine.num_bindings):
+                    shape = self.engine.get_binding_shape(binding)
+                    size = trt.volume(shape)
+                    dtype = trt.nptype(self.engine.get_binding_dtype(binding))
+
+                    host_mem = cuda.pagelocked_empty(size, dtype)
+                    device_mem = cuda.mem_alloc(host_mem.nbytes)
+
+                    if self.engine.binding_is_input(binding):
+                        self.h_input = host_mem
+                        self.d_input = device_mem
+                    else:
+                        self.output_shape = tuple(shape)
+                        self.h_output = host_mem
+                        self.d_output = device_mem
 
             self.stream = cuda.Stream()
-            self.get_logger().info(f'TensorRT engine loaded: {self.engine_path}')
+            self.get_logger().info(
+                f'TensorRT engine loaded: {self.engine_path} '
+                f'(API: {"v3/tensor-name" if self.use_v3 else "v2/bindings"}, '
+                f'output shape: {self.output_shape})')
 
         except Exception as e:
             self.get_logger().error(f'Failed to load TensorRT engine: {e}')
@@ -161,22 +197,30 @@ class YoloDetectorNode(Node):
                 'bbox': [x1, y1, x2, y2],
             })
 
-        # NMS
+        # Per-class NMS. Two things matter here:
+        #  1. cv2.dnn.NMSBoxes expects [x, y, WIDTH, HEIGHT] — feeding it the
+        #     corner format we store would compute IoU on garbage geometry.
+        #  2. NMS must run per class: on the torpedo board the 'circle' holes
+        #     overlap the 'fire'/'blood' symbol box, and a single class-
+        #     agnostic pass would suppress one with the other.
         if not detections:
             return []
 
-        boxes = np.array([d['bbox'] for d in detections])
-        scores = np.array([d['confidence'] for d in detections])
-        indices = cv2.dnn.NMSBoxes(
-            boxes.tolist(),
-            scores.tolist(),
-            self.conf_thresh,
-            self.nms_thresh)
+        kept = []
+        class_ids = {d['class_id'] for d in detections}
+        for cid in class_ids:
+            cls_dets = [d for d in detections if d['class_id'] == cid]
+            boxes_xywh = [
+                [d['bbox'][0], d['bbox'][1],
+                 d['bbox'][2] - d['bbox'][0], d['bbox'][3] - d['bbox'][1]]
+                for d in cls_dets]
+            scores = [d['confidence'] for d in cls_dets]
+            indices = cv2.dnn.NMSBoxes(
+                boxes_xywh, scores, self.conf_thresh, self.nms_thresh)
+            if len(indices) > 0:
+                kept.extend(cls_dets[i] for i in np.array(indices).flatten())
 
-        if len(indices) == 0:
-            return []
-
-        return [detections[i] for i in indices.flatten()]
+        return kept
 
     def _image_callback(self, msg: Image):
         """Process incoming image: inference + publish detections."""
@@ -194,14 +238,18 @@ class YoloDetectorNode(Node):
             blob, scale, dx, dy = self._preprocess(cv_image)
             np.copyto(self.h_input, blob.ravel())
             cuda.memcpy_htod_async(self.d_input, self.h_input, self.stream)
-            self.context.execute_async_v2(
-                bindings=[int(self.d_input), int(self.d_output)],
-                stream_handle=self.stream.handle)
+            if self.use_v3:
+                self.context.set_tensor_address(self.input_name, int(self.d_input))
+                self.context.set_tensor_address(self.output_name, int(self.d_output))
+                self.context.execute_async_v3(stream_handle=self.stream.handle)
+            else:
+                self.context.execute_async_v2(
+                    bindings=[int(self.d_input), int(self.d_output)],
+                    stream_handle=self.stream.handle)
             cuda.memcpy_dtoh_async(self.h_output, self.d_output, self.stream)
             self.stream.synchronize()
 
-            output_shape = self.engine.get_binding_shape(1)
-            output = self.h_output.reshape(output_shape)
+            output = self.h_output.reshape(self.output_shape)
             det_list = self._postprocess(output, scale, dx, dy, orig_w, orig_h)
 
         # Build DetectionArray message

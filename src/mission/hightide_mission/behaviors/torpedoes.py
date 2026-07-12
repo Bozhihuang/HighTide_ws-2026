@@ -15,12 +15,17 @@ larger circle and fire, then onto the smaller circle and fire.
 
 import py_trees
 from .common import (WaitForDetection, WaitForAnyDetection, WaitForDuration,
-                     LogBehavior, StopMotion)
+                     LogBehavior, StopMotion, SearchForDetection)
 from . import blackboard_keys as bb
 
 # Circles smaller than this fraction of the frame area are ignored as noise when
 # picking the "small" opening, so we don't servo onto a distant speck.
 MIN_CIRCLE_AREA_FRAC = 0.0005
+
+# The torpedo board hangs mid-water, so its fire/blood symbol appears in the
+# upper/middle of the frame — bins carry the same symbols but sit on the floor
+# (low in frame). Mirror constant of bins.BIN_MIN_Y_FRAC; tune in the pool.
+BOARD_MAX_Y_FRAC = 0.70
 
 
 class AlignTorpedo(py_trees.behaviour.Behaviour):
@@ -40,6 +45,7 @@ class AlignTorpedo(py_trees.behaviour.Behaviour):
         self.aligned_since = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.CURRENT_DEPTH, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
 
     def initialise(self):
@@ -61,17 +67,19 @@ class AlignTorpedo(py_trees.behaviour.Behaviour):
         except KeyError:
             return py_trees.common.Status.RUNNING
 
+        if detections is None:
+            return py_trees.common.Status.RUNNING
+
         img_w = detections.image_width or 1280
         img_h = detections.image_height or 720
 
         # Gather all hole ('circle') detections and pick large vs small by area.
         circles = []
-        if detections:
-            min_area = MIN_CIRCLE_AREA_FRAC * img_w * img_h
-            for det in detections.detections:
-                if det.class_name == 'circle' and det.confidence > 0.4:
-                    if (det.width * det.height) >= min_area:
-                        circles.append(det)
+        min_area = MIN_CIRCLE_AREA_FRAC * img_w * img_h
+        for det in detections.detections:
+            if det.class_name == 'circle' and det.confidence > 0.4:
+                if (det.width * det.height) >= min_area:
+                    circles.append(det)
 
         if not circles:
             return py_trees.common.Status.RUNNING
@@ -91,10 +99,19 @@ class AlignTorpedo(py_trees.behaviour.Behaviour):
         cmd.sway = max(-0.4, min(0.4, lateral_error * 2.0))
         cmd.yaw = 0.0  # FOG locked
 
-        # Depth adjustment via depth controller
-        depth_adj = Float64()
-        depth_adj.data = vertical_error * 0.05  # Small increments
-        node.depth_pub.publish(depth_adj)
+        # Depth adjustment: /hightide/target_depth is an ABSOLUTE setpoint
+        # (see depth_controller_node), so nudge relative to our current depth.
+        # Target below frame center (+error) → command slightly deeper.
+        if abs(vertical_error) > 0.05:
+            try:
+                current_depth = self.blackboard.get(bb.CURRENT_DEPTH)
+            except KeyError:
+                current_depth = None
+            if current_depth is not None:
+                step = max(-0.2, min(0.2, vertical_error * 0.4))
+                depth_adj = Float64()
+                depth_adj.data = current_depth + step
+                node.depth_pub.publish(depth_adj)
 
         node.cmd_pub.publish(cmd)
 
@@ -113,11 +130,14 @@ class AlignTorpedo(py_trees.behaviour.Behaviour):
 
 
 class FireTorpedo(py_trees.behaviour.Behaviour):
-    """Fire a torpedo via the actuator service."""
+    """Fire a torpedo via the actuator service. Fails after `timeout` so a
+    dead actuator node can't stall the whole mission forever."""
 
-    def __init__(self, name='FireTorpedo', tube_id=1):
+    def __init__(self, name='FireTorpedo', tube_id=1, timeout=15.0):
         super().__init__(name)
         self.tube_id = tube_id
+        self.timeout = timeout
+        self.start_time = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.TORPEDOES_FIRED, access=py_trees.common.Access.WRITE)
@@ -125,14 +145,21 @@ class FireTorpedo(py_trees.behaviour.Behaviour):
         self.future = None
 
     def initialise(self):
+        import time
         from hightide_interfaces.srv import FireTorpedo as FireTorpedoSrv
         node = self.blackboard.get(bb.ROS_NODE)
         self.client = node.create_client(FireTorpedoSrv, '/hightide/fire_torpedo')
         self.future = None
+        self.start_time = time.time()
 
     def update(self):
+        import time
         from hightide_interfaces.srv import FireTorpedo as FireTorpedoSrv
         node = self.blackboard.get(bb.ROS_NODE)
+
+        if (time.time() - self.start_time) > self.timeout:
+            node.get_logger().error('FireTorpedo service timed out')
+            return py_trees.common.Status.FAILURE
 
         if not self.client.wait_for_service(timeout_sec=1.0):
             return py_trees.common.Status.RUNNING
@@ -187,12 +214,15 @@ class ApproachBoard(py_trees.behaviour.Behaviour):
         except KeyError:
             return py_trees.common.Status.RUNNING
 
-        # The board is recognized by the role symbol printed on it. By this stage
-        # (bins already done) a visible fire/blood symbol is the torpedo board.
+        # The board is recognized by the role symbol printed on it. Only accept
+        # symbols in the upper/middle of frame — the bins carry the same
+        # symbols but sit on the floor (low in frame).
         board = None
         if detections:
+            img_h = detections.image_height or 720
             for det in detections.detections:
-                if det.class_name in ('fire', 'blood'):
+                if (det.class_name in ('fire', 'blood')
+                        and (det.center_y / img_h) <= BOARD_MAX_Y_FRAC):
                     board = det
                     break
 
@@ -206,7 +236,7 @@ class ApproachBoard(py_trees.behaviour.Behaviour):
             # Strafe to keep centered
             img_w = detections.image_width or 1280
             lateral_err = (board.center_x / img_w) - 0.5
-            cmd.sway = lateral_err * 1.5
+            cmd.sway = max(-0.4, min(0.4, lateral_err * 1.5))
         else:
             cmd.surge = 0.2  # Slow approach
 
@@ -221,7 +251,11 @@ def create_torpedoes_subtree() -> py_trees.behaviour.Behaviour:
         memory=True,
         children=[
             LogBehavior('Torp_Start', 'Starting Task 4: Torpedoes'),
-            WaitForAnyDetection('FindTorpedoBoard', {'fire', 'blood'}, timeout=90.0),
+            # Creep-and-sweep search; only accept symbols in the upper/middle
+            # of frame so we don't re-acquire the floor bins behind us.
+            SearchForDetection('FindTorpedoBoard', {'fire', 'blood'},
+                               timeout=90.0, surge=0.2,
+                               max_y_frac=BOARD_MAX_Y_FRAC),
             ApproachBoard('ApproachBoard', target_distance_m=1.0),
             StopMotion('StopBeforeAlign1'),
             AlignTorpedo('AlignLargeHole', prefer='large'),

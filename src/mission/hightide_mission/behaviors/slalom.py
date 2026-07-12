@@ -2,27 +2,40 @@
 Task 2: Avoid Debris (Slalom) — Navigate around RED and WHITE pipes.
 
 Strategy: Lock heading via FOG. Do NOT snake. Strafe laterally past each
-pipe set while maintaining forward heading. Stay on correct side based
-on which side the red divider was at the gate.
+pipe set while maintaining forward heading, then strafe back to re-center
+on the course line so the next set is found straight ahead. Stay on the
+correct side based on which side the red divider was at the gate.
 """
 
 import py_trees
 from .common import (WaitForDetection, WaitForDuration,
-                     LogBehavior, StopMotion)
+                     LogBehavior, StopMotion, SearchForDetection)
 from . import blackboard_keys as bb
 
 
 class SlalomPipe(py_trees.behaviour.Behaviour):
     """
-    Navigate around a single pipe set: surge until close,
-    strafe to correct side, surge past.
+    Navigate around a single pipe set with per-phase timing:
+      approach  — surge until the red pole is close (< 1.5 m)
+      strafe    — move laterally until the red pole clears the correct side
+      pass      — surge past the pipe set for a fixed duration
+      recenter  — strafe back for as long as we strafed out, re-centering on
+                  the course line so the next set appears ahead
+    Each phase has its own timer; previously every deadline was measured from
+    behavior start, so the pass duration depended on how long strafing took
+    (up to ~19 s of open-loop surge — enough to overshoot the next set).
     """
+
+    APPROACH_TIMEOUT = 15.0
+    STRAFE_TIMEOUT = 6.0
+    PASS_DURATION = 5.0
 
     def __init__(self, name='SlalomPipe', pipe_number=1):
         super().__init__(name)
         self.pipe_number = pipe_number
-        self.phase = 'approach'  # approach → strafe → pass
-        self.start_time = None
+        self.phase = 'approach'
+        self.phase_start = None
+        self.strafe_duration = 0.0
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.GATE_DIVIDER_SIDE, access=py_trees.common.Access.READ)
@@ -38,8 +51,14 @@ class SlalomPipe(py_trees.behaviour.Behaviour):
 
     def initialise(self):
         import time
-        self.start_time = time.time()
         self.phase = 'approach'
+        self.phase_start = time.time()
+        self.strafe_duration = 0.0
+
+    def _enter_phase(self, phase):
+        import time
+        self.phase = phase
+        self.phase_start = time.time()
 
     def update(self):
         import time
@@ -47,32 +66,34 @@ class SlalomPipe(py_trees.behaviour.Behaviour):
         node = self.blackboard.get(bb.ROS_NODE)
         cmd = ThrusterCommand()
         cmd.header.stamp = node.get_clock().now().to_msg()
-
-        # Timeout safety
-        if (time.time() - self.start_time) > 30.0:
-            return py_trees.common.Status.SUCCESS
+        phase_elapsed = time.time() - self.phase_start
 
         try:
             detections = self.blackboard.get(bb.DETECTIONS)
         except KeyError:
             detections = None
 
+        red_pole = None
+        if detections:
+            for det in detections.detections:
+                if det.class_name == 'slalom':
+                    red_pole = det
+                    break
+
         if self.phase == 'approach':
             # Surge forward until we see a red pole close enough. The ffc model's
             # 'slalom' class IS the red poles (white pipes aren't a trained
             # class), which is exactly the divider we align relative to.
             cmd.surge = 0.3
-            pipe_det = None
-            if detections:
-                for det in detections.detections:
-                    if det.class_name == 'slalom':
-                        pipe_det = det
-                        break
-
-            if pipe_det and pipe_det.depth_m > 0 and pipe_det.depth_m < 1.5:
-                self.phase = 'strafe'
+            if red_pole and red_pole.depth_m > 0 and red_pole.depth_m < 1.5:
                 node.get_logger().info(
-                    f'Pipe {self.pipe_number} at {pipe_det.depth_m:.1f}m — strafing')
+                    f'Pipe {self.pipe_number} at {red_pole.depth_m:.1f}m — strafing')
+                self._enter_phase('strafe')
+            elif phase_elapsed > self.APPROACH_TIMEOUT:
+                # Never got close to a red pole — just drive through the set.
+                node.get_logger().warn(
+                    f'Pipe {self.pipe_number} not acquired — passing straight')
+                self._enter_phase('pass')
             node.cmd_pub.publish(cmd)
             return py_trees.common.Status.RUNNING
 
@@ -95,27 +116,37 @@ class SlalomPipe(py_trees.behaviour.Behaviour):
             cmd.surge = 0.1  # Slight forward motion
             node.cmd_pub.publish(cmd)
 
-            # Check if the red pole ('slalom') has moved to the correct side of frame
-            if detections:
-                for det in detections.detections:
-                    if det.class_name == 'slalom':
-                        img_w = detections.image_width or 1280
-                        normalized_x = det.center_x / img_w
-                        if red_passed(normalized_x):
-                            self.phase = 'pass'
+            done = phase_elapsed > self.STRAFE_TIMEOUT
+            if red_pole and detections:
+                img_w = detections.image_width or 1280
+                if red_passed(red_pole.center_x / img_w):
+                    done = True
 
-            # Timeout strafe after 5 seconds
-            if (time.time() - self.start_time) > 15.0:
-                self.phase = 'pass'
-
+            if done:
+                self.strafe_duration = phase_elapsed
+                self._enter_phase('pass')
             return py_trees.common.Status.RUNNING
 
         elif self.phase == 'pass':
-            # Surge past the pipe
+            # Surge past the pipe for a fixed time.
             cmd.surge = 0.4
             node.cmd_pub.publish(cmd)
-            if (time.time() - self.start_time) > 25.0:
+            if phase_elapsed > self.PASS_DURATION:
+                self._enter_phase('recenter')
+            return py_trees.common.Status.RUNNING
+
+        elif self.phase == 'recenter':
+            # Strafe back toward the course line for as long as we strafed
+            # out (slightly less, to avoid crossing to the wrong side), so the
+            # next pipe set is found roughly straight ahead.
+            recenter_time = 0.8 * self.strafe_duration
+            if phase_elapsed >= recenter_time:
+                node.cmd_pub.publish(ThrusterCommand())
                 return py_trees.common.Status.SUCCESS
+            side = self._divider_side()
+            cmd.sway = -0.4 if side == 'right' else 0.4
+            cmd.surge = 0.2
+            node.cmd_pub.publish(cmd)
             return py_trees.common.Status.RUNNING
 
         return py_trees.common.Status.RUNNING
@@ -128,9 +159,11 @@ def create_slalom_subtree() -> py_trees.behaviour.Behaviour:
         memory=True,
         children=[
             LogBehavior('Slalom_Start', 'Starting Task 2: Slalom'),
-            # No path_marker class in the ffc model — head straight for the first
-            # red pole instead of following a path lead-in.
-            WaitForDetection('FindSlalom', 'slalom', timeout=30.0),
+            # No path_marker class in the ffc model — creep forward with a
+            # lateral sweep until the first red pole is seen (the slalom is
+            # NOT on a straight line from the gate, per the course rules).
+            SearchForDetection('FindSlalom', {'slalom'}, timeout=45.0,
+                               surge=0.2, sway_amplitude=0.2),
             WaitForDuration('ApproachSettle', duration_sec=2.0),
             SlalomPipe('SlalomPipe1', pipe_number=1),
             SlalomPipe('SlalomPipe2', pipe_number=2),

@@ -12,7 +12,7 @@ red divider, surge through, then a heading-safe 360° yaw spin for style points.
 import py_trees
 from .common import (WaitForDetection, WaitForAnyDetection, PublishThrusterCommand,
                      CallTriggerService, WaitForDuration, SetBlackboardValue,
-                     LogBehavior, StopMotion, RecordPose)
+                     LogBehavior, StopMotion, RecordPose, SearchForDetection)
 from . import blackboard_keys as bb
 
 
@@ -262,10 +262,14 @@ class HeadingTurn(py_trees.behaviour.Behaviour):
 def create_gate_subtree() -> py_trees.behaviour.Behaviour:
     """Build the Task 1 (Gate) behavior subtree."""
 
-    # Logic to handle Coin Flip (Heads = Front, Tails = Back)
+    # Logic to handle Coin Flip (Heads = Front, Tails = Back).
+    # memory=True is REQUIRED here: with memory=False the selector re-ticks
+    # QuickFindGate every tick after it fails, which re-initialises it (fresh
+    # 3s timer, returns RUNNING) and halts the AssumeTails branch — the 180°
+    # turn would get ~one tick per 3 seconds and never complete.
     find_gate_logic = py_trees.composites.Selector(
         name='CoinFlipLogic',
-        memory=False,
+        memory=True,
         children=[
             # 1. Quick check for Heads (gate in front) — a gate role symbol visible.
             WaitForAnyDetection('QuickFindGate', GATE_SYMBOLS, timeout=3.0),
@@ -278,7 +282,10 @@ def create_gate_subtree() -> py_trees.behaviour.Behaviour:
                     HeadingTurn('Turn180', degrees=180.0, tolerance=2.0, timeout=10.0),
                     StopMotion('StopTurn'),
                     WaitForDuration('SettleDown', duration_sec=1.0),
-                    WaitForAnyDetection('FindGateAfterTurn', GATE_SYMBOLS, timeout=60.0),
+                    # Creep-and-sweep rather than staring: after the turn the
+                    # gate should be roughly ahead but may be out of frame.
+                    SearchForDetection('FindGateAfterTurn', GATE_SYMBOLS,
+                                       timeout=60.0, surge=0.1),
                 ]
             )
         ]
@@ -289,15 +296,18 @@ def create_gate_subtree() -> py_trees.behaviour.Behaviour:
         memory=True,
         children=[
             LogBehavior('Gate_Start', 'Starting Task 1: Gate'),
-            # Remember where the gate is (odometry) so Return Home can navigate
-            # back to it — we have no pinger to home on.
-            RecordPose('RecordGatePose', bb.GATE_POSITION),
             find_gate_logic,
             SurgeThrough('ApproachGate', duration=3.0, speed=0.3),
             ConfirmGateRole('ConfirmRole'),
             AlignWithGateHalf('AlignGate'),
             SurgeThrough('PassThrough', duration=5.0, speed=0.5),
             StopMotion('StopAfterGate'),
+            # Remember the pose just PAST the gate (odometry) so Return Home
+            # can dead-reckon back to the far side of the gate and cross it
+            # once, camera-first — we have no pinger to home on. Recording
+            # before the gate (the old placement) made return-home target the
+            # start box, forcing a blind reverse crossing.
+            RecordPose('RecordGatePose', bb.GATE_POSITION),
             # Real 360° yaw spin for style — heading-safe (FOG returns to start).
             LogBehavior('Gate_StyleSpin', 'Executing style yaw spin'),
             CallTriggerService('YawSpinStyle', '/hightide/yaw_spin'),

@@ -27,7 +27,7 @@ class NavigateIntoOctagon(py_trees.behaviour.Behaviour):
     safety fallback in case odometry never arrives.
     """
 
-    def __init__(self, name='NavigateIntoOctagon', advance_distance_m=1.0,
+    def __init__(self, name='NavigateIntoOctagon', advance_distance_m=3.0,
                  surge=0.3, timeout=40.0):
         super().__init__(name)
         self.advance_distance_m = advance_distance_m
@@ -88,7 +88,7 @@ class NavigateIntoOctagon(py_trees.behaviour.Behaviour):
         # box filling most of the frame. Takes priority over the odometry advance.
         if detections:
             for det in detections.detections:
-                if det.class_name == 'buoy':
+                if det.class_name == 'buoy' and det.confidence > 0.4:
                     img_w = detections.image_width or 1280
                     cmd.sway = max(-0.3, min(0.3,
                                    ((det.center_x / img_w) - 0.5) * 1.5))

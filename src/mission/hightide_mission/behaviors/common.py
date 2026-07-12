@@ -151,6 +151,88 @@ class WaitForAnyDetection(py_trees.behaviour.Behaviour):
         return py_trees.common.Status.RUNNING
 
 
+class SearchForDetection(py_trees.behaviour.Behaviour):
+    """
+    Actively search for any of several classes instead of waiting stationary:
+    creep forward while sweeping laterally (sinusoidal sway). Heading stays
+    FOG-locked — the sweep widens the camera's effective corridor without
+    losing the course heading. The course guarantees no three elements are in
+    a straight line, so a pure stationary wait (the old behavior) usually
+    stares at empty water.
+
+    Succeeds (and stops motion) when a matching detection appears; fails on
+    timeout. min_y_frac/max_y_frac optionally constrain the detection's
+    normalized vertical center — used to tell floor props (bins) apart from
+    mid-water props (torpedo board) since both carry fire/blood symbols.
+    """
+
+    def __init__(self, name, target_classes, confidence_threshold=0.5,
+                 timeout=45.0, surge=0.15, sway_amplitude=0.2, sway_period=8.0,
+                 min_y_frac=None, max_y_frac=None):
+        super().__init__(name)
+        self.target_classes = set(target_classes)
+        self.conf_thresh = confidence_threshold
+        self.timeout = timeout
+        self.surge = surge
+        self.sway_amplitude = sway_amplitude
+        self.sway_period = sway_period
+        self.min_y_frac = min_y_frac
+        self.max_y_frac = max_y_frac
+        self.start_time = None
+        self.blackboard = self.attach_blackboard_client()
+        self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.TARGET_DETECTION, access=py_trees.common.Access.WRITE)
+        self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
+
+    def initialise(self):
+        self.start_time = pytime.time()
+
+    def _matches(self, det, img_h):
+        if det.class_name not in self.target_classes:
+            return False
+        if det.confidence < self.conf_thresh:
+            return False
+        y_frac = det.center_y / img_h if img_h else 0.5
+        if self.min_y_frac is not None and y_frac < self.min_y_frac:
+            return False
+        if self.max_y_frac is not None and y_frac > self.max_y_frac:
+            return False
+        return True
+
+    def update(self):
+        import math
+        node = self.blackboard.get(bb.ROS_NODE)
+        elapsed = pytime.time() - self.start_time
+
+        if elapsed > self.timeout:
+            node.cmd_pub.publish(ThrusterCommand())
+            return py_trees.common.Status.FAILURE
+
+        try:
+            detections = self.blackboard.get(bb.DETECTIONS)
+        except KeyError:
+            detections = None
+
+        if detections is not None:
+            img_h = detections.image_height or 720
+            for det in detections.detections:
+                if self._matches(det, img_h):
+                    self.blackboard.set(bb.TARGET_DETECTION, det)
+                    node.cmd_pub.publish(ThrusterCommand())
+                    node.get_logger().info(
+                        f'{self.name}: found {det.class_name} '
+                        f'(conf {det.confidence:.2f})')
+                    return py_trees.common.Status.SUCCESS
+
+        cmd = ThrusterCommand()
+        cmd.header.stamp = node.get_clock().now().to_msg()
+        cmd.surge = self.surge
+        cmd.sway = self.sway_amplitude * math.sin(
+            2.0 * math.pi * elapsed / self.sway_period)
+        node.cmd_pub.publish(cmd)
+        return py_trees.common.Status.RUNNING
+
+
 class CheckDetectionVisible(py_trees.behaviour.Behaviour):
     """Condition: checks if a class is currently visible in detections."""
 

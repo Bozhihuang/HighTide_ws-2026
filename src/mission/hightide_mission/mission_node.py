@@ -5,19 +5,24 @@ Mission Node — Root behavior tree that orchestrates all competition tasks.
 This is the master brain of the hightide AUV. It builds a py_trees behavior
 tree with the following structure:
 
-  Root (Parallel/Selector):
-  ├── Safety Guard (Sequence):
-  │   ├── CheckMissionTimeout
-  │   └── EmergencySurface (triggered on timeout)
-  └── Main Mission (Sequence):
-      ├── PreDive (Arm → AltHold → Submerge → Stabilize)
-      ├── Task1_Gate
-      ├── Task2_Slalom
-      ├── Task3_Bins
-      ├── Task4_Torpedoes
-      ├── Task5_Octagon
-      ├── Task6_ReturnHome
-      └── StylePoints (barrel roll)
+  Root (Sequence "MainMission"):
+  ├── PreDive (Arm → AltHold → Submerge → Stabilize)
+  ├── Task1_Gate
+  ├── Task2_Slalom
+  ├── Task3_Bins
+  ├── Task4_Torpedoes
+  ├── Task5_Octagon
+  ├── Task6_ReturnHome
+  └── StylePoints (barrel roll)
+
+Safety is enforced at the NODE level, not inside the tree: a behavior-tree
+parallel cannot cleanly halt the mission branch while also driving an
+emergency maneuver (both branches keep publishing conflicting commands). So
+every tick the node first checks the mission timeout; on timeout — or when
+the tree finishes — it stops ticking the tree entirely and runs a
+surface-then-disarm shutdown sequence itself. Once disarmed it calls
+rclpy.shutdown(), which makes the node exit; full_system.launch.py's
+OnProcessExit handler then tears down the rest of the stack.
 
 The node also manages ROS2 subscriptions to keep the blackboard updated
 with fresh sensor data every tick.
@@ -27,9 +32,10 @@ import time as pytime
 import py_trees
 import rclpy
 from rclpy.node import Node
-from rclpy.executors import SingleThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor, ExternalShutdownException
 
 from std_msgs.msg import Float64
+from std_srvs.srv import SetBool
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
 from mavros_msgs.msg import State
@@ -45,9 +51,7 @@ from hightide_mission.behaviors.bins import create_bins_subtree
 from hightide_mission.behaviors.torpedoes import create_torpedoes_subtree
 from hightide_mission.behaviors.octagon import create_octagon_subtree
 from hightide_mission.behaviors.return_home import create_return_home_subtree
-from hightide_mission.behaviors.emergency import CheckMissionTimeout, EmergencySurface
-from hightide_mission.behaviors.common import (
-    LogBehavior, WaitForDuration, CallTriggerService)
+from hightide_mission.behaviors.common import LogBehavior, CallTriggerService
 
 
 class MissionNode(Node):
@@ -116,8 +120,9 @@ class MissionNode(Node):
         self.blackboard.register_key(key=bb.GATE_DIVIDER_SIDE, access=py_trees.common.Access.WRITE)
 
         # Initialize blackboard
+        self.mission_start_time = pytime.time()
         self.blackboard.set(bb.ROS_NODE, self)
-        self.blackboard.set(bb.MISSION_START_TIME, pytime.time())
+        self.blackboard.set(bb.MISSION_START_TIME, self.mission_start_time)
         self.blackboard.set(bb.MISSION_TIMEOUT, self.mission_timeout)
         self.blackboard.set(bb.CHOSEN_ROLE, self.chosen_role)
         self.blackboard.set(bb.CURRENT_TASK, MissionState.IDLE)
@@ -130,6 +135,12 @@ class MissionNode(Node):
         self.blackboard.set(bb.CURRENT_HEADING, 0.0)
         self.blackboard.set(bb.VEHICLE_ARMED, False)
         self.blackboard.set(bb.VEHICLE_MODE, '')
+
+        # Safe-shutdown state machine: None → 'surfacing' → 'disarming' → 'done'
+        self._shutdown_state = None
+        self._shutdown_start = None
+        self._disarm_client = None
+        self._disarm_future = None
 
         # Build behavior tree
         self.tree = self._build_tree()
@@ -186,7 +197,8 @@ class MissionNode(Node):
         # run only after every heading-dependent task is complete.
         style_finale = CallTriggerService('BarrelRollFinale', '/hightide/barrel_roll')
 
-        # Main mission sequence
+        # Main mission sequence — this IS the root. Timeout/emergency handling
+        # lives in _tick(), not in the tree (see module docstring).
         main_mission = py_trees.composites.Sequence(
             name='MainMission',
             memory=True,
@@ -199,37 +211,89 @@ class MissionNode(Node):
             ],
         )
 
-        # Safety guard — runs in parallel, emergency surfaces on timeout
-        safety = py_trees.composites.Sequence(
-            name='SafetyGuard',
-            memory=False,
-            children=[
-                CheckMissionTimeout('TimeoutCheck'),
-            ],
-        )
-
-        # Root: Safety runs alongside main mission
-        root = py_trees.composites.Parallel(
-            name='MissionRoot',
-            policy=py_trees.common.ParallelPolicy.SuccessOnAll(),
-            children=[
-                safety,
-                main_mission,
-            ],
-        )
-
-        tree = py_trees.trees.BehaviourTree(root=root)
+        tree = py_trees.trees.BehaviourTree(root=main_mission)
         return tree
 
     def _tick(self):
-        """Tick the behavior tree once."""
+        """Tick the behavior tree once, with node-level safety supervision."""
+        # Once a shutdown has begun the tree never ticks again — a finished or
+        # timed-out memory-sequence would otherwise reset and re-run the whole
+        # mission (re-arm, re-submerge) on the next tick.
+        if self._shutdown_state is not None:
+            self._run_safe_shutdown()
+            self._publish_mission_state()
+            return
+
+        if (pytime.time() - self.mission_start_time) > self.mission_timeout:
+            self._begin_shutdown('MISSION TIMEOUT — emergency surface + disarm',
+                                 error=True)
+            self._run_safe_shutdown()
+            self._publish_mission_state()
+            return
+
         try:
             self.tree.tick()
         except Exception as e:
             self.get_logger().error(f'Behavior tree tick error: {e}')
 
+        if self.tree.root.status == py_trees.common.Status.SUCCESS:
+            self._begin_shutdown('Mission complete — surfacing and disarming')
+        elif self.tree.root.status == py_trees.common.Status.FAILURE:
+            # Only pre-dive can fail the root (tasks are FailureIsSuccess).
+            # Let the tree restart and retry arming/diving; the mission
+            # timeout above bounds how long this can go on.
+            self.get_logger().warn('Mission tree FAILED (pre-dive) — retrying')
+
         # Publish mission state
         self._publish_mission_state()
+
+    # ==================== Safe shutdown (complete / timeout) ====================
+
+    def _begin_shutdown(self, reason, error=False):
+        """Latch the mission over; _tick only runs the shutdown sequence now."""
+        self._shutdown_state = 'surfacing'
+        self._shutdown_start = pytime.time()
+        log = self.get_logger().error if error else self.get_logger().info
+        log(f'=== {reason} ===')
+
+    def _run_safe_shutdown(self):
+        """One tick of the surface-then-disarm sequence."""
+        # Kill lateral/forward motion and command the surface every tick.
+        self.cmd_pub.publish(ThrusterCommand())
+        surface = Float64()
+        surface.data = 0.0
+        self.depth_pub.publish(surface)
+
+        elapsed = pytime.time() - self._shutdown_start
+
+        if self._shutdown_state == 'surfacing':
+            try:
+                depth = self.blackboard.get(bb.CURRENT_DEPTH)
+            except KeyError:
+                depth = None
+            # 30 s is a generous ascent budget from mission depth; if depth
+            # feedback is dead we disarm anyway rather than spin forever.
+            if (depth is not None and depth < 0.3) or elapsed > 30.0:
+                self.get_logger().info('At surface — disarming')
+                self._disarm_client = self.create_client(SetBool, '/hightide/arm')
+                req = SetBool.Request()
+                req.data = False
+                self._disarm_future = self._disarm_client.call_async(req)
+                self._shutdown_state = 'disarming'
+                self._shutdown_start = pytime.time()
+
+        elif self._shutdown_state == 'disarming':
+            if self._disarm_future.done() or elapsed > 10.0:
+                if self._disarm_future.done():
+                    self.get_logger().info('Disarmed — mission node exiting')
+                else:
+                    self.get_logger().warn(
+                        'Disarm service did not respond — exiting anyway')
+                self._shutdown_state = 'done'
+                # Exiting the node triggers full_system.launch.py's
+                # OnProcessExit → the whole stack shuts down.
+                self.tick_timer.cancel()
+                rclpy.shutdown()
 
     def _publish_mission_state(self):
         """Publish current mission state for monitoring."""
@@ -243,6 +307,8 @@ class MissionNode(Node):
         tip = self.tree.root.tip()
         msg.current_behavior = tip.name if tip else 'idle'
         msg.status_message = str(tip.status) if tip else 'IDLE'
+        if self._shutdown_state is not None:
+            msg.current_behavior = f'shutdown:{self._shutdown_state}'
         msg.task_start_time = self.get_clock().now().to_msg()
 
         try:
@@ -285,13 +351,15 @@ def main(args=None):
     executor.add_node(node)
     try:
         executor.spin()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        # Emergency: stop all motors
-        cmd = ThrusterCommand()
-        node.cmd_pub.publish(cmd)
-        node.get_logger().info('Mission node shutdown — motors stopped')
+        # Emergency: stop all motors (context may already be down on clean exit)
+        try:
+            node.cmd_pub.publish(ThrusterCommand())
+            node.get_logger().info('Mission node shutdown — motors stopped')
+        except Exception:
+            pass
         node.destroy_node()
 
 if __name__ == '__main__':

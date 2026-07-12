@@ -1,19 +1,22 @@
 """
 Task 6: Return Home — navigate back to the recorded gate pose and pass through.
 
-We have no acoustic pinger, so homing is odometry-based: at the start of the run
-the gate task recorded the vehicle's ZED-odometry pose into GATE_POSITION. Here
-we dead-reckon back to that (x, y) using body-frame surge/sway (same crab-walk
-decomposition as the waypoint navigator), then confirm the gate visually and
-surge through. Odometry drift over a full run makes this approximate, so the
+We have no acoustic pinger, so homing is odometry-based: the gate task recorded
+the vehicle's ZED-odometry pose just AFTER passing through the gate into
+GATE_POSITION. Here we first turn 180° (so the camera faces the way home and
+the dead-reckon drives forward, not blind in reverse), dead-reckon back to
+that (x, y) using body-frame surge/sway (same crab-walk decomposition as the
+waypoint navigator), then confirm the gate visually and surge through once.
+Odometry drift over a full run makes the dead-reckon approximate, so the
 visual pass-through is what actually closes the task.
 """
 
 import math
 import py_trees
 from .common import (WaitForDetection, WaitForAnyDetection, WaitForDuration,
-                     LogBehavior, StopMotion, PublishDepthSetpoint)
-from .gate import SurgeThrough, GATE_SYMBOLS
+                     LogBehavior, StopMotion, PublishDepthSetpoint,
+                     SearchForDetection)
+from .gate import SurgeThrough, HeadingTurn, GATE_SYMBOLS
 from . import blackboard_keys as bb
 
 
@@ -104,10 +107,17 @@ def create_return_home_subtree() -> py_trees.behaviour.Behaviour:
             LogBehavior('ReturnHome_Start', 'Starting Task 6: Return Home'),
             PublishDepthSetpoint('SubmergeForReturn', depth_m=1.0),
             WaitForDuration('WaitSubmerge', duration_sec=5.0),
-            # Dead-reckon back toward where the gate was recorded at the start.
+            # Turn to face home FIRST so the dead-reckon drives camera-first
+            # instead of surging backward blind through the course.
+            HeadingTurn('TurnHome', degrees=180.0, tolerance=2.0, timeout=10.0),
+            StopMotion('StopAfterTurnHome'),
+            WaitForDuration('SettleAfterTurn', duration_sec=1.0),
+            # Dead-reckon back toward the pose recorded just past the gate.
             NavigateToRecordedPose('DeadReckonToGate'),
-            # Then confirm the gate visually (via its role symbols) and pass through.
-            WaitForAnyDetection('FindGateReturn', GATE_SYMBOLS, timeout=60.0),
+            # Then confirm the gate visually (via its role symbols) and pass
+            # through once, forward.
+            SearchForDetection('FindGateReturn', GATE_SYMBOLS, timeout=60.0,
+                               surge=0.1),
             SurgeThrough('ApproachGateReturn', duration=3.0, speed=0.3),
             SurgeThrough('PassThroughGateReturn', duration=5.0, speed=0.5),
             StopMotion('StopAfterReturn'),

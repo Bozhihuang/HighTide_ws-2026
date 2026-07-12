@@ -36,7 +36,7 @@ yolo_detector_node:
     # Front-facing-camera (ffc) 8-class model. Export the .pt to a TensorRT
     # engine on the ZED Box first:  yolo export model=ffc.pt format=engine imgsz=640
     # The class list must match hightide_perception.CLASS_NAMES (see that file).
-    engine_path: '/home/zedbox/models/ffc_yolov8.engine'
+    engine_path: '/home/user/models/ffc_yolov8.engine'
     confidence_threshold: 0.5
     nms_threshold: 0.45
     input_width: 640

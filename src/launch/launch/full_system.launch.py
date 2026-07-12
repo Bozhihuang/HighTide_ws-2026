@@ -24,7 +24,11 @@ def generate_launch_description():
                                       description='Mission depth in meters')
     timeout_arg = DeclareLaunchArgument('mission_timeout', default_value='900.0',
                                         description='Mission timeout in seconds')
-    engine_arg = DeclareLaunchArgument('yolo_engine', default_value='',
+    # Default must match params.yaml's engine_path — this dict is applied AFTER
+    # the params file, so an empty default would clobber the yaml value and drop
+    # the detector into mock mode. Override at launch with yolo_engine:=/path.
+    engine_arg = DeclareLaunchArgument('yolo_engine',
+                                       default_value='/home/user/models/ffc_yolov8.engine',
                                        description='Path to TensorRT engine file')
     
     # Defaults the argument to your verified working tether connection parameter
@@ -104,6 +108,28 @@ def generate_launch_description():
         executable='mode_manager_node',
         name='mode_manager_node',
         output='screen',
+    )
+
+    # ============== PERCEPTION NODES ==============
+    # The mission is blind without these two — mission_node consumes
+    # /hightide/tracked_targets, which is tracker(detector(ZED RGB)) output.
+    yolo_detector = Node(
+        package='hightide_perception',
+        executable='yolo_detector_node',
+        name='yolo_detector_node',
+        output='screen',
+        parameters=[
+            global_config,
+            {'engine_path': yolo_engine},
+        ],
+    )
+
+    target_tracker = Node(
+        package='hightide_perception',
+        executable='target_tracker_node',
+        name='target_tracker_node',
+        output='screen',
+        parameters=[global_config],
     )
 
     detection_viz = Node(
@@ -198,6 +224,8 @@ def generate_launch_description():
         rc_override,
         depth_controller,
         mode_manager,
+        yolo_detector,
+        target_tracker,
         # detection_viz,
         nav_tier_manager,
         waypoint_navigator,

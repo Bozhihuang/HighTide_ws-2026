@@ -65,15 +65,21 @@ class TargetTrackerNode(Node):
         super().__init__('target_tracker_node')
 
 
-        # Default parameters 
+        # Default parameters
         self.declare_parameter('max_tracking_age', 1.0)
         self.declare_parameter('iou_threshold', 0.3)
         self.declare_parameter('depth_sample_radius', 5)
+        # Minimum detections before a track is published. The mission commits
+        # decisions (gate side, bin choice) on a single published detection,
+        # so a one-frame YOLO false positive must not reach it. At ~15-30 fps
+        # this delays real objects by only ~0.1-0.2 s.
+        self.declare_parameter('min_hits', 3)
 
         # override parameters with whats in launch file if specially defined
         self.max_age = self.get_parameter('max_tracking_age').value
         self.iou_thresh = self.get_parameter('iou_threshold').value
         self.depth_radius = self.get_parameter('depth_sample_radius').value
+        self.min_hits = self.get_parameter('min_hits').value
 
         self.bridge = CvBridge() # bridge that will convert depth img format
         # initialize empty dictionary assigning track_id int to TrackedTarget object
@@ -232,6 +238,10 @@ class TargetTrackerNode(Node):
         # fill out the detection[] list with the tracked targets,
         # look at detection.msg for more on the fields of each detection
         for track in self.tracks.values():
+            # suppress tracks that haven't been confirmed by enough frames yet
+            # (single-frame false positives never get published)
+            if track.hit_count < self.min_hits:
+                continue
             det = Detection()
             det.header = msg.header
             det.class_id = track.class_id
