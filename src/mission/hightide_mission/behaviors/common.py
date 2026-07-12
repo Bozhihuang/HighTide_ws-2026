@@ -38,6 +38,43 @@ def yaw_hold(node, locked_heading, kp=1.5, limit=0.3):
     return max(-limit, min(limit, kp * err))
 
 
+def detection_size(det):
+    """Pixel size of a detection, preferring the TRUE segmented mask area.
+
+    Seg (YOLO*-seg) models populate `mask_area` — the count of segmented pixels,
+    which is a cleaner size cue than the bounding box for thin / rotated /
+    occluded shapes. Detect-only models (and the classical RGB detectors) leave
+    it 0.0, so we fall back to bbox area. Use this anywhere the old code did
+    `det.width * det.height` for a size comparison.
+    """
+    area = getattr(det, 'mask_area', 0.0)
+    if area and area > 0.0:
+        return float(area)
+    return float(det.width * det.height)
+
+
+def distribute_timeout(total, weights):
+    """Split a mission's total time budget across its timeout-bearing behaviors.
+
+    `weights` is a {name: weight} dict — we pass the hand-tuned default timeouts
+    as the weights, so the RELATIVE ratios between behaviors are preserved while
+    the absolute values are scaled to sum to `total`. Returns {name: seconds}.
+
+    IMPORTANT: only feed *failure / search deadlines* (how long to wait or search
+    before giving up) through here. Fixed motion durations — SurgeThrough,
+    SlalomPipe.PASS_DURATION, WaitForDuration settle times — must stay constant:
+    those are open-loop "drive for N seconds" motions, and scaling one would
+    change how far the sub actually travels (e.g. straight into a wall).
+    """
+    names = list(weights)
+    if not names:
+        return {}
+    s = float(sum(weights.values()))
+    if s <= 0:
+        return {n: total / len(names) for n in names}
+    return {n: total * (float(weights[n]) / s) for n in names}
+
+
 class PublishThrusterCommand(py_trees.behaviour.Behaviour):
     """Publish a single ThrusterCommand and succeed."""
 

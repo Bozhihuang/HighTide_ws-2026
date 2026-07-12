@@ -128,18 +128,28 @@ def _report_engine_io(engine_path, num_classes):
                 outputs.append(shape)
 
     nc4 = num_classes + 4
-    det = next((s for s in outputs if any(d == nc4 for d in s)), None)
+    # The proto tensor (1, num_masks, mh, mw) is the only 4D output; its channel
+    # count is the smallest non-1 dim (num_masks << mask height/width).
     proto = next((s for s in outputs if len(s) == 4), None)
-    if det is not None and proto is not None:
-        masks = proto[1]
+    masks = 0
+    if proto is not None:
+        proto_dims = [d for d in proto if d != 1]
+        masks = min(proto_dims) if proto_dims else 0
+    # A SEG detection tensor is (num_classes + 4 + num_masks) wide, a DETECT one
+    # is (num_classes + 4). Match either — a seg engine's det tensor is NOT nc4.
+    seg_width = nc4 + masks
+    det = next((s for s in outputs
+                if len(s) != 4 and (seg_width in s or nc4 in s)), None)
+    if proto is not None and det is not None and seg_width in det:
         print(f'\n  OK: segmentation engine detected — {num_classes} classes, '
-              f'{masks} mask protos. Detection tensor feature width = {nc4 + masks}.')
-    elif det is not None:
+              f'{masks} mask protos. Detection tensor feature width = {seg_width}.')
+    elif det is not None and nc4 in det:
         print(f'\n  Detect-only engine ({num_classes} classes, no mask protos). '
               f'The node runs but produces boxes only.')
     else:
-        print(f'\n  WARNING: no output tensor has {nc4} features. This engine was NOT '
-              f'built for the {num_classes}-class model — re-export from the correct .pt.')
+        print(f'\n  WARNING: no output tensor has {seg_width} (seg) or {nc4} (detect) '
+              f'features. This engine was NOT built for the {num_classes}-class model '
+              f'— re-export from the correct .pt.')
 
 
 if __name__ == '__main__':

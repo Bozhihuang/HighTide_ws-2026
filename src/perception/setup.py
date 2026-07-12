@@ -14,5 +14,7 @@ setup(
         'yolo_detector_node = hightide_perception.yolo_detector_node:main',
         'target_tracker_node = hightide_perception.target_tracker_node:main',
         'detection_viz_node = hightide_perception.detection_viz_node:main',
+        'slalom_pole_detector_node = hightide_perception.slalom_pole_detector_node:main',
+        'octagon_table_detector_node = hightide_perception.octagon_table_detector_node:main',
     ]},
 )

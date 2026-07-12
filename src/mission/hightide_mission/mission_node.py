@@ -70,10 +70,55 @@ class MissionNode(Node):
         # 'survey_repair' or 'search_rescue'.
         self.declare_parameter('chosen_role', 'survey_repair')
 
+        # Per-mission time budgets (seconds). Each subtree factory splits its
+        # budget across its own timeout-bearing behaviors, preserving their tuned
+        # ratios (see behaviors.common.distribute_timeout). NOTE: the sum of the
+        # six budgets (default 6*240 = 1440 s) intentionally exceeds
+        # mission_timeout_sec (900 s) — the global cap wins, so later tasks are
+        # squeezed if earlier ones run long. Fixed open-loop motions (surge/pass/
+        # settle) are NOT part of these budgets and never scale.
+        self.declare_parameter('gate_timeout_sec', 240.0)
+        self.declare_parameter('slalom_timeout_sec', 240.0)
+        self.declare_parameter('bins_timeout_sec', 240.0)
+        self.declare_parameter('torpedoes_timeout_sec', 240.0)
+        self.declare_parameter('octagon_timeout_sec', 240.0)
+        self.declare_parameter('return_home_timeout_sec', 240.0)
+
+        # Octagon (Task 5) tuning knobs — surfaced so they can be tuned in-water
+        # via `ros2 param set` without editing code.
+        self.declare_parameter('octagon_advance_distance_m', 3.0)  # blind odom advance
+        self.declare_parameter('octagon_surge', 0.3)
+        self.declare_parameter('octagon_buoy_fill_frac', 0.7)      # buoy box fill => inside
+        self.declare_parameter('octagon_table_fill_frac', 0.6)     # table box fill => inside
+        self.declare_parameter('octagon_table_class', 'octagon_table')
+        self.declare_parameter('octagon_confidence', 0.4)          # min det confidence
+        self.declare_parameter('octagon_settle_sec', 2.0)          # fixed settle (not scaled)
+        self.declare_parameter('octagon_surface_depth_m', 0.3)     # "at surface" threshold
+
         self.mission_depth = self.get_parameter('mission_depth_m').value
         self.mission_timeout = self.get_parameter('mission_timeout_sec').value
         self.tick_rate = self.get_parameter('tick_rate').value
         self.chosen_role = self.get_parameter('chosen_role').value
+
+        # Per-mission budgets
+        self.gate_timeout = self.get_parameter('gate_timeout_sec').value
+        self.slalom_timeout = self.get_parameter('slalom_timeout_sec').value
+        self.bins_timeout = self.get_parameter('bins_timeout_sec').value
+        self.torpedoes_timeout = self.get_parameter('torpedoes_timeout_sec').value
+        self.octagon_timeout = self.get_parameter('octagon_timeout_sec').value
+        self.return_home_timeout = self.get_parameter('return_home_timeout_sec').value
+
+        # Octagon knobs
+        self.octagon_params = dict(
+            advance_distance_m=self.get_parameter('octagon_advance_distance_m').value,
+            surge=self.get_parameter('octagon_surge').value,
+            buoy_fill_frac=self.get_parameter('octagon_buoy_fill_frac').value,
+            table_fill_frac=self.get_parameter('octagon_table_fill_frac').value,
+            table_class=self.get_parameter('octagon_table_class').value,
+            confidence=self.get_parameter('octagon_confidence').value,
+            settle_sec=self.get_parameter('octagon_settle_sec').value,
+            surface_depth_m=self.get_parameter('octagon_surface_depth_m').value,
+        )
 
         # Publishers
         self.cmd_pub = self.create_publisher(ThrusterCommand, '/hightide/cmd_vel', 10)
@@ -198,12 +243,13 @@ class MissionNode(Node):
             name='CompetitionTasks',
             memory=True,
             children=[
-                resilient(create_gate_subtree()),
-                resilient(create_slalom_subtree()),
-                resilient(create_bins_subtree()),
-                resilient(create_torpedoes_subtree()),
-                resilient(create_octagon_subtree()),
-                resilient(create_return_home_subtree()),
+                resilient(create_gate_subtree(total_timeout=self.gate_timeout)),
+                resilient(create_slalom_subtree(total_timeout=self.slalom_timeout)),
+                resilient(create_bins_subtree(total_timeout=self.bins_timeout)),
+                resilient(create_torpedoes_subtree(total_timeout=self.torpedoes_timeout)),
+                resilient(create_octagon_subtree(total_timeout=self.octagon_timeout,
+                                                 **self.octagon_params)),
+                resilient(create_return_home_subtree(total_timeout=self.return_home_timeout)),
             ],
         )
 

@@ -10,7 +10,8 @@ import math
 import py_trees
 from .common import (WaitForDetection, WaitForAnyDetection, WaitForDuration,
                      LogBehavior, StopMotion, PublishDepthSetpoint,
-                     SearchForDetection, lock_heading, yaw_hold)
+                     SearchForDetection, lock_heading, yaw_hold,
+                     distribute_timeout)
 from . import blackboard_keys as bb
 
 # Bins sit on the pool floor, so their symbols appear in the LOWER part of the
@@ -223,8 +224,19 @@ class DropMarker(py_trees.behaviour.Behaviour):
         return py_trees.common.Status.FAILURE
 
 
-def create_bins_subtree() -> py_trees.behaviour.Behaviour:
-    """Build the Task 3 (Bins) behavior subtree."""
+def create_bins_subtree(total_timeout=240.0) -> py_trees.behaviour.Behaviour:
+    """Build the Task 3 (Bins) behavior subtree.
+
+    total_timeout is this mission's time budget, split across the search,
+    identify, navigate-over and marker-drop deadlines (ratios preserve the old
+    45:30:20:15:15 tuning). NavigateOverBin's travel distance is measured off
+    ZED odometry, so scaling its timeout only extends the safety fallback, not
+    the distance driven. WaitForDuration hovers are fixed and NOT scaled.
+    """
+    t = distribute_timeout(total_timeout, {
+        'find': 45.0, 'identify': 30.0, 'navigate': 20.0,
+        'drop1': 15.0, 'drop2': 15.0})
+
     return py_trees.composites.Sequence(
         name='Task3_Bins',
         memory=True,
@@ -235,15 +247,15 @@ def create_bins_subtree() -> py_trees.behaviour.Behaviour:
             # search (course elements are never on a straight line), and only
             # accept symbols low in frame so we don't latch the torpedo board
             # (which carries the same symbols mid-water).
-            SearchForDetection('FindBins', {'fire', 'blood'}, timeout=45.0,
+            SearchForDetection('FindBins', {'fire', 'blood'}, timeout=t['find'],
                                surge=0.2, min_y_frac=BIN_MIN_Y_FRAC),
-            IdentifyCorrectBin('IdentifyBin'),
-            NavigateOverBin('NavigateOverBin1'),
+            IdentifyCorrectBin('IdentifyBin', timeout=t['identify']),
+            NavigateOverBin('NavigateOverBin1', timeout=t['navigate']),
             StopMotion('HoverOverBin1'),
             WaitForDuration('StabilizeOverBin1', duration_sec=3.0),
-            DropMarker('DropMarker1', dropper_id=1),
+            DropMarker('DropMarker1', dropper_id=1, timeout=t['drop1']),
             WaitForDuration('WaitAfterDrop1', duration_sec=2.0),
-            DropMarker('DropMarker2', dropper_id=2),
+            DropMarker('DropMarker2', dropper_id=2, timeout=t['drop2']),
             StopMotion('StopAfterBins'),
             LogBehavior('Bins_Done', 'Task 3 Bins COMPLETE'),
         ],

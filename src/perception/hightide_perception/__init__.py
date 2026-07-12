@@ -21,3 +21,15 @@ CLASS_NAMES = {
     6: 'slalom',             # RED slalom poles
     7: 'sos',                # SOS emoji — Search & Rescue role symbol
 }
+
+# Sentinel (non-YOLO) classes published by auxiliary/classical detectors. These
+# are NOT part of the trained ffc-model contract above — their IDs sit above the
+# model's range so they can never collide with a real YOLO class. Consumers key
+# off the class_name string, so a detector just needs to stamp the right name.
+SENTINEL_CLASS_NAMES = {
+    8: 'white_pole',     # slalom WHITE pipe — classical RGB detector (not trained)
+    9: 'octagon_table',  # under-octagon "capability-matrix" table — placeholder
+                         # cue for octagon localization (see
+                         # octagon_table_detector_node.py); consumed by the
+                         # NavigateIntoOctagon behavior when present.
+}

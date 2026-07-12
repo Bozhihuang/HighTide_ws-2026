@@ -15,7 +15,8 @@ import math
 import py_trees
 from .common import (WaitForDetection, WaitForAnyDetection, WaitForDuration,
                      LogBehavior, StopMotion, PublishDepthSetpoint,
-                     SearchForDetection, lock_heading, yaw_hold)
+                     SearchForDetection, lock_heading, yaw_hold,
+                     distribute_timeout)
 from .gate import SurgeThrough, HeadingTurn, GATE_SYMBOLS
 from . import blackboard_keys as bb
 
@@ -101,8 +102,18 @@ class NavigateToRecordedPose(py_trees.behaviour.Behaviour):
         return py_trees.common.Status.RUNNING
 
 
-def create_return_home_subtree() -> py_trees.behaviour.Behaviour:
-    """Build the Task 6 (Return Home) behavior subtree."""
+def create_return_home_subtree(total_timeout=240.0) -> py_trees.behaviour.Behaviour:
+    """Build the Task 6 (Return Home) behavior subtree.
+
+    total_timeout is this mission's time budget, split across the 180° turn,
+    the odometry dead-reckon and the visual gate re-acquisition deadlines
+    (ratios preserve the old 10:90:60 tuning). The dead-reckon drives toward a
+    recorded pose, so a longer timeout only extends the safety fallback.
+    WaitForDuration settles and the SurgeThrough pass are fixed and NOT scaled.
+    """
+    t = distribute_timeout(total_timeout, {
+        'turn': 10.0, 'deadreckon': 90.0, 'find': 60.0})
+
     return py_trees.composites.Sequence(
         name='Task6_ReturnHome',
         memory=True,
@@ -112,14 +123,14 @@ def create_return_home_subtree() -> py_trees.behaviour.Behaviour:
             WaitForDuration('WaitSubmerge', duration_sec=5.0),
             # Turn to face home FIRST so the dead-reckon drives camera-first
             # instead of surging backward blind through the course.
-            HeadingTurn('TurnHome', degrees=180.0, tolerance=2.0, timeout=10.0),
+            HeadingTurn('TurnHome', degrees=180.0, tolerance=2.0, timeout=t['turn']),
             StopMotion('StopAfterTurnHome'),
             WaitForDuration('SettleAfterTurn', duration_sec=1.0),
             # Dead-reckon back toward the pose recorded just past the gate.
-            NavigateToRecordedPose('DeadReckonToGate'),
+            NavigateToRecordedPose('DeadReckonToGate', timeout=t['deadreckon']),
             # Then confirm the gate visually (via its role symbols) and pass
             # through once, forward.
-            SearchForDetection('FindGateReturn', GATE_SYMBOLS, timeout=60.0,
+            SearchForDetection('FindGateReturn', GATE_SYMBOLS, timeout=t['find'],
                                surge=0.1),
             SurgeThrough('ApproachGateReturn', duration=3.0, speed=0.3),
             SurgeThrough('PassThroughGateReturn', duration=5.0, speed=0.5),

@@ -16,7 +16,7 @@ larger circle and fire, then onto the smaller circle and fire.
 import py_trees
 from .common import (WaitForDetection, WaitForAnyDetection, WaitForDuration,
                      LogBehavior, StopMotion, SearchForDetection,
-                     lock_heading, yaw_hold)
+                     lock_heading, yaw_hold, distribute_timeout, detection_size)
 from . import blackboard_keys as bb
 
 # Circles smaller than this fraction of the frame area are ignored as noise when
@@ -76,21 +76,23 @@ class AlignTorpedo(py_trees.behaviour.Behaviour):
         img_w = detections.image_width or 1280
         img_h = detections.image_height or 720
 
-        # Gather all hole ('circle') detections and pick large vs small by area.
+        # Gather all hole ('circle') detections and pick large vs small by size.
+        # Size is the segmented mask area when available (a cleaner cue than the
+        # bbox for a ring viewed at an angle), else bbox area — see detection_size.
         circles = []
         min_area = MIN_CIRCLE_AREA_FRAC * img_w * img_h
         for det in detections.detections:
             if det.class_name == 'circle' and det.confidence > 0.4:
-                if (det.width * det.height) >= min_area:
+                if detection_size(det) >= min_area:
                     circles.append(det)
 
         if not circles:
             return py_trees.common.Status.RUNNING
 
         if self.prefer == 'large':
-            target = max(circles, key=lambda d: d.width * d.height)
+            target = max(circles, key=detection_size)
         else:
-            target = min(circles, key=lambda d: d.width * d.height)
+            target = min(circles, key=detection_size)
 
         # Lateral alignment (strafe to center target horizontally)
         lateral_error = (target.center_x / img_w) - 0.5
@@ -250,8 +252,18 @@ class ApproachBoard(py_trees.behaviour.Behaviour):
         return py_trees.common.Status.RUNNING
 
 
-def create_torpedoes_subtree() -> py_trees.behaviour.Behaviour:
-    """Build the Task 4 (Torpedoes) behavior subtree."""
+def create_torpedoes_subtree(total_timeout=240.0) -> py_trees.behaviour.Behaviour:
+    """Build the Task 4 (Torpedoes) behavior subtree.
+
+    total_timeout is this mission's time budget, split across the board search,
+    approach, the two hole-align servos and the two fire deadlines (ratios
+    preserve the old 90:30:30:15:30:15 tuning). SteadyAim waits are fixed and
+    NOT scaled.
+    """
+    t = distribute_timeout(total_timeout, {
+        'find': 90.0, 'approach': 30.0, 'align_large': 30.0,
+        'fire1': 15.0, 'align_small': 30.0, 'fire2': 15.0})
+
     return py_trees.composites.Sequence(
         name='Task4_Torpedoes',
         memory=True,
@@ -260,17 +272,18 @@ def create_torpedoes_subtree() -> py_trees.behaviour.Behaviour:
             # Creep-and-sweep search; only accept symbols in the upper/middle
             # of frame so we don't re-acquire the floor bins behind us.
             SearchForDetection('FindTorpedoBoard', {'fire', 'blood'},
-                               timeout=90.0, surge=0.2,
+                               timeout=t['find'], surge=0.2,
                                max_y_frac=BOARD_MAX_Y_FRAC),
-            ApproachBoard('ApproachBoard', target_distance_m=1.0),
+            ApproachBoard('ApproachBoard', target_distance_m=1.0,
+                          timeout=t['approach']),
             StopMotion('StopBeforeAlign1'),
-            AlignTorpedo('AlignLargeHole', prefer='large'),
+            AlignTorpedo('AlignLargeHole', prefer='large', timeout=t['align_large']),
             WaitForDuration('SteadyAim1', duration_sec=2.0),
-            FireTorpedo('FireTorpedo1', tube_id=1),
+            FireTorpedo('FireTorpedo1', tube_id=1, timeout=t['fire1']),
             WaitForDuration('WaitAfterFire1', duration_sec=2.0),
-            AlignTorpedo('AlignSmallHole', prefer='small'),
+            AlignTorpedo('AlignSmallHole', prefer='small', timeout=t['align_small']),
             WaitForDuration('SteadyAim2', duration_sec=2.0),
-            FireTorpedo('FireTorpedo2', tube_id=2),
+            FireTorpedo('FireTorpedo2', tube_id=2, timeout=t['fire2']),
             StopMotion('StopAfterTorpedoes'),
             LogBehavior('Torp_Done', 'Task 4 Torpedoes COMPLETE'),
         ],

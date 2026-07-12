@@ -11,7 +11,8 @@ red divider, surge through, then a heading-safe 360° yaw spin for style points.
 
 import py_trees
 from .common import (CallTriggerService, LogBehavior, StopMotion, RecordPose,
-                     WaitForStableDetection, YawSweepSearch, lock_heading, yaw_hold)
+                     WaitForStableDetection, YawSweepSearch, lock_heading,
+                     yaw_hold, distribute_timeout)
 from . import blackboard_keys as bb
 
 
@@ -264,8 +265,16 @@ class HeadingTurn(py_trees.behaviour.Behaviour):
         return py_trees.common.Status.RUNNING
 
 
-def create_gate_subtree() -> py_trees.behaviour.Behaviour:
-    """Build the Task 1 (Gate) behavior subtree."""
+def create_gate_subtree(total_timeout=240.0) -> py_trees.behaviour.Behaviour:
+    """Build the Task 1 (Gate) behavior subtree.
+
+    total_timeout is this mission's time budget, split across the quick-find,
+    sweep-search, role-confirm and align deadlines (ratios preserve the old
+    5:45:15:20 tuning). SurgeThrough durations are fixed open-loop motions and
+    are NOT scaled.
+    """
+    t = distribute_timeout(total_timeout, {
+        'quick': 5.0, 'sweep': 45.0, 'confirm': 15.0, 'align': 20.0})
 
     # Find the gate WITHOUT assuming which way we're pointing. The old logic
     # only handled "gate dead ahead" or "gate exactly 180° behind"; if the sub
@@ -283,9 +292,9 @@ def create_gate_subtree() -> py_trees.behaviour.Behaviour:
         memory=True,
         children=[
             WaitForStableDetection('QuickFindGate', GATE_SYMBOLS,
-                                   window=5, min_hits=4, timeout=5.0),
+                                   window=5, min_hits=4, timeout=t['quick']),
             YawSweepSearch('SweepForGate', GATE_SYMBOLS,
-                           window=5, min_hits=4, timeout=45.0),
+                           window=5, min_hits=4, timeout=t['sweep']),
         ]
     )
 
@@ -296,8 +305,8 @@ def create_gate_subtree() -> py_trees.behaviour.Behaviour:
             LogBehavior('Gate_Start', 'Starting Task 1: Gate'),
             find_gate_logic,
             SurgeThrough('ApproachGate', duration=3.0, speed=0.3),
-            ConfirmGateRole('ConfirmRole'),
-            AlignWithGateHalf('AlignGate'),
+            ConfirmGateRole('ConfirmRole', timeout=t['confirm']),
+            AlignWithGateHalf('AlignGate', timeout=t['align']),
             SurgeThrough('PassThrough', duration=5.0, speed=0.5),
             StopMotion('StopAfterGate'),
             # Remember the pose just PAST the gate (odometry) so Return Home
