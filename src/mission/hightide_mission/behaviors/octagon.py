@@ -27,7 +27,8 @@ import math
 import py_trees
 from .common import (WaitForDetection, WaitForDuration,
                      LogBehavior, StopMotion, PublishDepthSetpoint,
-                     lock_heading, yaw_hold, distribute_timeout, detection_size)
+                     lock_heading, yaw_hold, distribute_timeout, detection_size,
+                     estimate_travel, read_use_odometry, read_dead_reckon_mps)
 from . import blackboard_keys as bb
 
 
@@ -58,16 +59,22 @@ class NavigateIntoOctagon(py_trees.behaviour.Behaviour):
         self.sway_limit = sway_limit
         self.start_time = None
         self.start_pos = None
+        self.use_odom = True
+        self.dr_mps = 0.4
         self._locked_heading = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.CURRENT_POSE, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.USE_ODOMETRY, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.DEAD_RECKON_MPS, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
 
     def initialise(self):
         import time
         self.start_time = time.time()
         self.start_pos = None
+        self.use_odom = read_use_odometry(self.blackboard)
+        self.dr_mps = read_dead_reckon_mps(self.blackboard)
         self._locked_heading = lock_heading(self.blackboard.get(bb.ROS_NODE))
         try:
             pose = self.blackboard.get(bb.CURRENT_POSE)
@@ -77,17 +84,15 @@ class NavigateIntoOctagon(py_trees.behaviour.Behaviour):
             pass
 
     def _distance_traveled(self):
-        """Straight-line distance from where this behavior started, via ZED odom."""
-        if self.start_pos is None:
-            return None
+        """Distance from where this behavior started — ZED odometry in 'zed' mode,
+        else open-loop elapsed_time * dead_reckon_mps."""
+        import time
         try:
             pose = self.blackboard.get(bb.CURRENT_POSE)
         except KeyError:
-            return None
-        if pose is None:
-            return None
-        pos = pose.pose.pose.position
-        return math.hypot(pos.x - self.start_pos[0], pos.y - self.start_pos[1])
+            pose = None
+        return estimate_travel(self.use_odom, self.start_pos, pose,
+                               self.start_time, time.time(), self.dr_mps)
 
     def _pick_visual_cue(self, detections):
         """Return (det, fill_frac) for the best visual cue, or (None, None).

@@ -5,6 +5,7 @@ Each behavior is a py_trees.behaviour.Behaviour subclass that accesses
 ROS2 through the blackboard-stored node reference.
 """
 
+import math
 import time as pytime
 from collections import deque
 import py_trees
@@ -36,6 +37,41 @@ def yaw_hold(node, locked_heading, kp=1.5, limit=0.3):
     from hightide_navigation import normalize_angle
     err = normalize_angle(locked_heading - current)
     return max(-limit, min(limit, kp * err))
+
+
+def read_use_odometry(blackboard, default=True):
+    """Global movement mode from the blackboard: True = ZED odometry (closed-loop
+    on CURRENT_POSE), False = open-loop timed dead reckoning. Defaults to
+    odometry if the key was never set (mission_node sets it at startup)."""
+    try:
+        v = blackboard.get(bb.USE_ODOMETRY)
+    except KeyError:
+        return default
+    return default if v is None else bool(v)
+
+
+def read_dead_reckon_mps(blackboard, default=0.4):
+    """Calibrated forward speed (m/s) used to convert distance→time in dead-reckon
+    mode. From the blackboard, else `default`."""
+    try:
+        v = blackboard.get(bb.DEAD_RECKON_MPS)
+    except KeyError:
+        return default
+    return float(v) if v else default
+
+
+def estimate_travel(use_odom, start_pos, current_pose, start_time, now, mps):
+    """Distance (m) traveled since a leg started.
+
+    ZED-odometry mode uses the straight-line CURRENT_POSE delta (accurate,
+    drift-aside). Dead-reckon mode — or odometry mode with no pose available —
+    falls back to open-loop elapsed_time * mps, which is only as good as the mps
+    calibration but needs no position feedback at all.
+    """
+    if use_odom and start_pos is not None and current_pose is not None:
+        p = current_pose.pose.pose.position
+        return math.hypot(p.x - start_pos[0], p.y - start_pos[1])
+    return max(0.0, now - start_time) * mps
 
 
 def detection_size(det):
@@ -76,7 +112,7 @@ def distribute_timeout(total, weights):
 
 
 class DeadReckonTransit(py_trees.behaviour.Behaviour):
-    """Blind inter-task transit across open water using ZED odometry as a ruler.
+    """Blind inter-task transit across open water to a body-frame offset.
 
     Course props are far apart, so "creep forward until the next prop appears"
     is too slow and misses anything off the current axis. This drives a fixed
@@ -84,13 +120,17 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
     held by the FOG, so it strafes rather than turns — then hands off to the
     task's own visual search to acquire the prop.
 
-    forward_m: +ahead in the vehicle's held heading.
-    lateral_m: +right in that frame (course A/D mirror flips the sign upstream —
-               see mission_node.course_sign).
+    Two movement modes, chosen by the global blackboard flag USE_ODOMETRY:
+      * ZED (odometry): closed-loop — build a world target from the offset and
+        drive to it, stopping within pos_tol. Accurate.
+      * dead reckon: open-loop — drive the offset's direction at `speed` for
+        time = distance / DEAD_RECKON_MPS. No position feedback; only as good as
+        the mps calibration, but works with ZED odometry down.
 
-    Best-effort by design: succeeds when within pos_tol of the target, on
-    timeout, or immediately if there's no odometry / the offset is zero — it must
-    never stall the mission (the global supervisor is the only hard stop).
+    forward_m: +ahead in the held heading. lateral_m: +right (course A/D set the
+    value upstream). Best-effort: succeeds on arrival, on timeout, or immediately
+    for a zero offset — it never stalls the mission (the supervisor is the only
+    hard stop).
     """
 
     def __init__(self, name='DeadReckonTransit', forward_m=0.0, lateral_m=0.0,
@@ -102,51 +142,86 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
         self.pos_tol = pos_tol
         self.timeout = timeout
         self.start_time = None
-        self.target = None          # world-frame (x, y) goal, set in initialise
+        self.target = None          # world (x, y) goal (odometry mode only)
+        self.dr_duration = None     # timed drive length (dead-reckon mode only)
+        self.dr_surge = 0.0
+        self.dr_sway = 0.0
         self._locked_heading = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.CURRENT_POSE, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.CURRENT_HEADING, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.USE_ODOMETRY, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.DEAD_RECKON_MPS, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
 
     def initialise(self):
-        import math
         self.start_time = pytime.time()
         self.target = None
+        self.dr_duration = None
         node = self.blackboard.get(bb.ROS_NODE)
         self._locked_heading = lock_heading(node)
-        try:
-            pose = self.blackboard.get(bb.CURRENT_POSE)
-            yaw = self.blackboard.get(bb.CURRENT_HEADING)
-        except KeyError:
-            pose = yaw = None
-        if pose is None or yaw is None:
-            return  # no odometry — update() will best-effort succeed
-        # Body-frame (forward=surge, lateral=sway) → world displacement. This is
-        # the exact inverse of update()'s world→body decomposition, so a lateral
-        # offset commands the matching sway sign (same +sway convention as the
-        # rest of the stack — unverified in-pool, but internally consistent).
-        cos_y, sin_y = math.cos(yaw), math.sin(yaw)
-        wx = self.forward_m * cos_y - self.lateral_m * sin_y
-        wy = self.forward_m * sin_y + self.lateral_m * cos_y
-        p = pose.pose.pose.position
-        self.target = (p.x + wx, p.y + wy)
+
+        mag = math.hypot(self.forward_m, self.lateral_m)
+        if mag < 1e-6:
+            return  # zero offset — update() succeeds immediately
+
+        use_odom = read_use_odometry(self.blackboard)
+        if use_odom:
+            try:
+                pose = self.blackboard.get(bb.CURRENT_POSE)
+                yaw = self.blackboard.get(bb.CURRENT_HEADING)
+            except KeyError:
+                pose = yaw = None
+            if pose is not None and yaw is not None:
+                # Body-frame (forward=surge, lateral=sway) → world displacement,
+                # the exact inverse of update()'s world→body decomposition so a
+                # lateral offset commands the matching +sway sign.
+                cos_y, sin_y = math.cos(yaw), math.sin(yaw)
+                wx = self.forward_m * cos_y - self.lateral_m * sin_y
+                wy = self.forward_m * sin_y + self.lateral_m * cos_y
+                p = pose.pose.pose.position
+                self.target = (p.x + wx, p.y + wy)
+                node.get_logger().info(
+                    f'{self.name}: ZED transit fwd={self.forward_m:.1f} lat={self.lateral_m:.1f}m')
+                return
+
+        # Dead-reckon mode (or odometry requested but unavailable): drive the
+        # offset direction open-loop for distance/mps seconds.
+        mps = read_dead_reckon_mps(self.blackboard)
+        self.dr_duration = mag / max(mps, 1e-3)
+        self.dr_surge = self.speed * self.forward_m / mag
+        self.dr_sway = self.speed * self.lateral_m / mag
         node.get_logger().info(
-            f'{self.name}: transit fwd={self.forward_m:.1f}m lat={self.lateral_m:.1f}m')
+            f'{self.name}: dead-reckon transit fwd={self.forward_m:.1f} '
+            f'lat={self.lateral_m:.1f}m over {self.dr_duration:.1f}s @ {mps:.2f}m/s')
 
     def update(self):
-        import math
         from hightide_interfaces.msg import ThrusterCommand
         node = self.blackboard.get(bb.ROS_NODE)
 
-        # Zero offset, no odom, or drift never resolved → don't stall the mission.
-        if self.target is None:
+        # Zero offset → nothing to do.
+        if self.target is None and self.dr_duration is None:
             return py_trees.common.Status.SUCCESS
         if (pytime.time() - self.start_time) > self.timeout:
             node.get_logger().warn(f'{self.name}: transit timed out — proceeding')
             node.cmd_pub.publish(ThrusterCommand())
             return py_trees.common.Status.SUCCESS
 
+        # ---- Dead-reckon (open-loop timed) ----
+        if self.target is None:
+            if (pytime.time() - self.start_time) >= self.dr_duration:
+                node.cmd_pub.publish(ThrusterCommand())
+                node.get_logger().info(f'{self.name}: dead-reckon leg complete')
+                return py_trees.common.Status.SUCCESS
+            cmd = ThrusterCommand()
+            cmd.header.stamp = node.get_clock().now().to_msg()
+            cmd.surge = self.dr_surge
+            cmd.sway = self.dr_sway
+            cmd.yaw = yaw_hold(node, self._locked_heading)
+            node.cmd_pub.publish(cmd)
+            return py_trees.common.Status.RUNNING
+
+        # ---- ZED odometry (closed-loop to world target) ----
         try:
             current = self.blackboard.get(bb.CURRENT_POSE)
             yaw = self.blackboard.get(bb.CURRENT_HEADING)
@@ -164,8 +239,7 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
             node.get_logger().info(f'{self.name}: reached transit target')
             return py_trees.common.Status.SUCCESS
 
-        # World error → body frame (surge ahead, +sway right), matching the
-        # waypoint navigator's decomposition; heading held by the FOG.
+        # World error → body frame (surge ahead, +sway right); heading FOG-held.
         cos_y, sin_y = math.cos(yaw), math.sin(yaw)
         surge = dx * cos_y + dy * sin_y
         sway = -dx * sin_y + dy * cos_y

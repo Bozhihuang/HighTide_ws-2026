@@ -11,7 +11,8 @@ import py_trees
 from .common import (WaitForDetection, WaitForAnyDetection, WaitForDuration,
                      LogBehavior, StopMotion, PublishDepthSetpoint,
                      SearchForDetection, lock_heading, yaw_hold,
-                     distribute_timeout)
+                     distribute_timeout, estimate_travel,
+                     read_use_odometry, read_dead_reckon_mps)
 from . import blackboard_keys as bb
 
 # Bins sit on the pool floor, so their symbols appear in the LOWER part of the
@@ -90,16 +91,22 @@ class NavigateOverBin(py_trees.behaviour.Behaviour):
         self.floor_depth_m = floor_depth_m
         self.start_time = None
         self.start_pos = None
+        self.use_odom = True
+        self.dr_mps = 0.4
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.TARGET_DETECTION, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.CURRENT_POSE, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.CURRENT_DEPTH, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.USE_ODOMETRY, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.DEAD_RECKON_MPS, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
 
     def initialise(self):
         import time
         self.start_time = time.time()
         self.start_pos = None
+        self.use_odom = read_use_odometry(self.blackboard)
+        self.dr_mps = read_dead_reckon_mps(self.blackboard)
         self._locked_heading = lock_heading(self.blackboard.get(bb.ROS_NODE))
 
         # Distance to cover = HORIZONTAL component of the last-seen ZED range.
@@ -131,17 +138,15 @@ class NavigateOverBin(py_trees.behaviour.Behaviour):
             pass
 
     def _distance_traveled(self):
-        """Straight-line distance from where this behavior started, via ZED odom."""
-        if self.start_pos is None:
-            return None
+        """Distance from where this behavior started — ZED odometry in 'zed' mode,
+        else open-loop elapsed_time * dead_reckon_mps."""
+        import time
         try:
             pose = self.blackboard.get(bb.CURRENT_POSE)
         except KeyError:
-            return None
-        if pose is None:
-            return None
-        pos = pose.pose.pose.position
-        return math.hypot(pos.x - self.start_pos[0], pos.y - self.start_pos[1])
+            pose = None
+        return estimate_travel(self.use_odom, self.start_pos, pose,
+                               self.start_time, time.time(), self.dr_mps)
 
     def update(self):
         import time
@@ -149,7 +154,7 @@ class NavigateOverBin(py_trees.behaviour.Behaviour):
         node = self.blackboard.get(bb.ROS_NODE)
 
         if (time.time() - self.start_time) > self.timeout:
-            node.get_logger().warn('NavigateOverBin timed out (no odom / never advanced)')
+            node.get_logger().warn('NavigateOverBin timed out (never advanced)')
             node.cmd_pub.publish(ThrusterCommand())
             return py_trees.common.Status.SUCCESS
 

@@ -22,6 +22,10 @@ GATE_SIDE = 'gate_side'
 NAV_TIER = 'nav_tier'
 TARGET_WAYPOINT = 'target_waypoint'
 GATE_POSITION = 'gate_position'   # For return home
+# Movement mode: True = measure travel with ZED odometry (closed-loop on
+# CURRENT_POSE); False = open-loop dead reckoning (elapsed time * DEAD_RECKON_MPS).
+USE_ODOMETRY = 'use_odometry'
+DEAD_RECKON_MPS = 'dead_reckon_mps'  # calibrated forward speed (m/s) for timed mode
 
 # Task progress
 MARKERS_DROPPED = 'markers_dropped'

@@ -100,6 +100,13 @@ class MissionNode(Node):
         # Courses A and D are DIFFERENT layouts (not mirror images), so each has
         # its OWN transit distances. `course` selects which set is used at run
         # time; the other set is ignored.
+        # Movement mode for the odometry/dead-reckon behaviors (transits, the
+        # bin/octagon "advance N metres" legs). 'zed' = measure travel with ZED
+        # odometry (accurate, closed-loop); 'dead_reckon' = open-loop timed drive
+        # (distance / dead_reckon_mps) for when ZED odometry is down/unreliable.
+        self.declare_parameter('movement_mode', 'zed')             # 'zed' or 'dead_reckon'
+        self.declare_parameter('dead_reckon_mps', 0.4)             # calibrated fwd speed (m/s)
+
         self.declare_parameter('course', 'A')                      # 'A' or 'D'
         # Props are far apart, so between tasks we blind-drive a fixed body-frame
         # (forward, lateral) offset on ZED odometry, THEN let the next task's
@@ -122,6 +129,11 @@ class MissionNode(Node):
         self.torpedoes_timeout = self.get_parameter('torpedoes_timeout_sec').value
         self.octagon_timeout = self.get_parameter('octagon_timeout_sec').value
         self.return_home_timeout = self.get_parameter('return_home_timeout_sec').value
+
+        # Movement mode → blackboard flag the nav behaviors read.
+        mode = str(self.get_parameter('movement_mode').value).lower()
+        self.use_odometry = (mode != 'dead_reckon')   # anything but dead_reckon = zed
+        self.dead_reckon_mps = float(self.get_parameter('dead_reckon_mps').value)
 
         # Selected course (A/D) — picks which transit distance set is used.
         self.course = str(self.get_parameter('course').value).upper()
@@ -195,6 +207,8 @@ class MissionNode(Node):
         self.blackboard.register_key(key=bb.OBJECTS_COLLECTED, access=py_trees.common.Access.WRITE)
         self.blackboard.register_key(key=bb.GATE_POSITION, access=py_trees.common.Access.WRITE)
         self.blackboard.register_key(key=bb.GATE_DIVIDER_SIDE, access=py_trees.common.Access.WRITE)
+        self.blackboard.register_key(key=bb.USE_ODOMETRY, access=py_trees.common.Access.WRITE)
+        self.blackboard.register_key(key=bb.DEAD_RECKON_MPS, access=py_trees.common.Access.WRITE)
 
         # Initialize blackboard
         self.mission_start_time = pytime.time()
@@ -208,6 +222,8 @@ class MissionNode(Node):
         self.blackboard.set(bb.OBJECTS_COLLECTED, 0)
         self.blackboard.set(bb.GATE_POSITION, None)
         self.blackboard.set(bb.GATE_DIVIDER_SIDE, 'right')
+        self.blackboard.set(bb.USE_ODOMETRY, self.use_odometry)
+        self.blackboard.set(bb.DEAD_RECKON_MPS, self.dead_reckon_mps)
         self.blackboard.set(bb.CURRENT_DEPTH, 0.0)
         self.blackboard.set(bb.CURRENT_HEADING, 0.0)
         self.blackboard.set(bb.VEHICLE_ARMED, False)
@@ -234,6 +250,10 @@ class MissionNode(Node):
         self.get_logger().info(f'Chosen role: {self.chosen_role}')
         self.get_logger().info(f'Mission depth: {self.mission_depth}m')
         self.get_logger().info(f'Timeout: {self.mission_timeout}s')
+        self.get_logger().info(
+            f'Movement mode: {"ZED odometry" if self.use_odometry else "DEAD RECKON"}'
+            + ('' if self.use_odometry else f' ({self.dead_reckon_mps} m/s)')
+            + f' | Course: {self.course}')
 
     def _build_tree(self) -> py_trees.trees.BehaviourTree:
         """Build the full competition behavior tree."""

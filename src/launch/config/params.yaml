@@ -26,6 +26,14 @@ mission_node:
     octagon_settle_sec: 2.0
     octagon_surface_depth_m: 0.3
 
+    # ---- Movement mode: ZED odometry vs open-loop dead reckoning ----
+    # 'zed'        = measure travel with ZED odometry (accurate, closed-loop).
+    # 'dead_reckon'= open-loop timed drive (distance / dead_reckon_mps) — use if
+    #                ZED odometry is down/unreliable in the pool.
+    # Applies to the inter-mission transits and the bin/octagon "advance N m" legs.
+    movement_mode: 'zed'              # 'zed' or 'dead_reckon'
+    dead_reckon_mps: 0.4              # calibrated forward speed (m/s) at transit thrust
+
     # ---- Course + inter-mission dead-reckon transits ----
     # Courses A and D are DIFFERENT layouts. Fill in BOTH sets; `course` picks
     # which one runs. Blind-drive a body-frame (forward, lateral) offset on ZED
