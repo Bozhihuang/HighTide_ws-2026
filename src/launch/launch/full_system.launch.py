@@ -226,7 +226,7 @@ def generate_launch_description():
         mode_manager,
         yolo_detector,
         target_tracker,
-        # detection_viz,
+        detection_viz,
         nav_tier_manager,
         waypoint_navigator,
         vision_servo,
