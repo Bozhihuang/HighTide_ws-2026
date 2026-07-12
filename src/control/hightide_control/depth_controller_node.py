@@ -26,7 +26,7 @@ class DepthControllerNode(Node):
         super().__init__('depth_controller_node')
 
         # PID parameters
-        self.declare_parameter('kp', 500.0)
+        self.declare_parameter('kp', 300.0)
         self.declare_parameter('ki', 35.0)
         self.declare_parameter('kd', 0.0)
         self.declare_parameter('max_output', 600)
