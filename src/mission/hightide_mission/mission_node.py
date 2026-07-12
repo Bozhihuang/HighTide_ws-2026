@@ -33,6 +33,7 @@ import py_trees
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import SingleThreadedExecutor, ExternalShutdownException
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from std_msgs.msg import Float64
 from std_srvs.srv import SetBool
@@ -79,19 +80,29 @@ class MissionNode(Node):
         self.depth_pub = self.create_publisher(Float64, '/hightide/target_depth', 10)
         self.state_pub = self.create_publisher(MissionState, '/hightide/mission_state', 10)
 
+        # MAVROS sensor topics (depth, IMU, odometry) are published BEST_EFFORT.
+        # A default (RELIABLE) subscriber is QoS-incompatible with them and
+        # receives NOTHING — which silently pinned CURRENT_DEPTH at 0.0 and made
+        # SubmergeToDepth time out forever. Match the publisher with sensor QoS.
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
+
         # Subscribers — update blackboard
         self.create_subscription(
             DetectionArray, '/hightide/tracked_targets',
             self._detections_cb, 10)
         self.create_subscription(
             Odometry, '/mavros/zed/odom',
-            self._odom_cb, 10)
+            self._odom_cb, sensor_qos)
         self.create_subscription(
             Float64, '/mavros/global_position/rel_alt',
-            self._depth_cb, 10)
+            self._depth_cb, sensor_qos)
         self.create_subscription(
             Imu, '/mavros/imu/data',
-            self._imu_cb, 10)
+            self._imu_cb, sensor_qos)
         self.create_subscription(
             State, '/mavros/state',
             self._mavros_state_cb, 10)
@@ -135,6 +146,10 @@ class MissionNode(Node):
         self.blackboard.set(bb.CURRENT_HEADING, 0.0)
         self.blackboard.set(bb.VEHICLE_ARMED, False)
         self.blackboard.set(bb.VEHICLE_MODE, '')
+
+        # Live FOG/IMU heading (radians), updated by _imu_cb. Behaviors read
+        # this for active yaw-hold. None until the first IMU message arrives.
+        self.current_heading = None
 
         # Safe-shutdown state machine: None → 'surfacing' → 'disarming' → 'done'
         self._shutdown_state = None
@@ -332,7 +347,13 @@ class MissionNode(Node):
     def _imu_cb(self, msg):
         from hightide_navigation import quaternion_to_yaw
         try:
-            self.blackboard.set(bb.CURRENT_HEADING, quaternion_to_yaw(msg.orientation))
+            yaw = quaternion_to_yaw(msg.orientation)
+            self.blackboard.set(bb.CURRENT_HEADING, yaw)
+            # Mirror onto a plain attribute so translating behaviors can read the
+            # live FOG/IMU heading for active yaw-hold without registering a
+            # blackboard key. This is the single heading source of truth (IMU,
+            # NOT ZED) used everywhere for heading.
+            self.current_heading = yaw
         except Exception:
             pass
 

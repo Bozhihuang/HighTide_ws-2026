@@ -15,7 +15,8 @@ larger circle and fire, then onto the smaller circle and fire.
 
 import py_trees
 from .common import (WaitForDetection, WaitForAnyDetection, WaitForDuration,
-                     LogBehavior, StopMotion, SearchForDetection)
+                     LogBehavior, StopMotion, SearchForDetection,
+                     lock_heading, yaw_hold)
 from . import blackboard_keys as bb
 
 # Circles smaller than this fraction of the frame area are ignored as noise when
@@ -43,6 +44,7 @@ class AlignTorpedo(py_trees.behaviour.Behaviour):
         self.timeout = timeout
         self.start_time = None
         self.aligned_since = None
+        self._locked_heading = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.CURRENT_DEPTH, access=py_trees.common.Access.READ)
@@ -52,6 +54,7 @@ class AlignTorpedo(py_trees.behaviour.Behaviour):
         import time
         self.start_time = time.time()
         self.aligned_since = None
+        self._locked_heading = lock_heading(self.blackboard.get(bb.ROS_NODE))
 
     def update(self):
         import time
@@ -97,7 +100,7 @@ class AlignTorpedo(py_trees.behaviour.Behaviour):
         cmd = ThrusterCommand()
         cmd.header.stamp = node.get_clock().now().to_msg()
         cmd.sway = max(-0.4, min(0.4, lateral_error * 2.0))
-        cmd.yaw = 0.0  # FOG locked
+        cmd.yaw = yaw_hold(node, self._locked_heading)  # actively hold heading (FOG)
 
         # Depth adjustment: /hightide/target_depth is an ABSOLUTE setpoint
         # (see depth_controller_node), so nudge relative to our current depth.
@@ -193,6 +196,7 @@ class ApproachBoard(py_trees.behaviour.Behaviour):
         self.target_dist = target_distance_m
         self.timeout = timeout
         self.start_time = None
+        self._locked_heading = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
@@ -200,6 +204,7 @@ class ApproachBoard(py_trees.behaviour.Behaviour):
     def initialise(self):
         import time
         self.start_time = time.time()
+        self._locked_heading = lock_heading(self.blackboard.get(bb.ROS_NODE))
 
     def update(self):
         import time
@@ -228,6 +233,7 @@ class ApproachBoard(py_trees.behaviour.Behaviour):
 
         cmd = ThrusterCommand()
         cmd.header.stamp = node.get_clock().now().to_msg()
+        cmd.yaw = yaw_hold(node, self._locked_heading)  # hold heading while approaching
 
         if board and board.depth_m > 0:
             if board.depth_m <= self.target_dist:

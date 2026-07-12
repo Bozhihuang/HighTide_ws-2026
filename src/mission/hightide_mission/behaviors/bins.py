@@ -10,7 +10,7 @@ import math
 import py_trees
 from .common import (WaitForDetection, WaitForAnyDetection, WaitForDuration,
                      LogBehavior, StopMotion, PublishDepthSetpoint,
-                     SearchForDetection)
+                     SearchForDetection, lock_heading, yaw_hold)
 from . import blackboard_keys as bb
 
 # Bins sit on the pool floor, so their symbols appear in the LOWER part of the
@@ -78,11 +78,12 @@ class NavigateOverBin(py_trees.behaviour.Behaviour):
     """
 
     def __init__(self, name='NavigateOverBin', surge_distance=2.0,
-                 surge=0.4, timeout=30.0, floor_depth_m=2.5):
+                 surge=0.3, timeout=20.0, floor_depth_m=2.5):
         super().__init__(name)
         self.surge_dist = surge_distance
         self.surge = surge
         self.timeout = timeout
+        self._locked_heading = None
         # Venue pool-floor depth under the bins (m). Used to convert the ZED
         # slant range into horizontal travel — set per venue (TRANSDEC ~3.8).
         self.floor_depth_m = floor_depth_m
@@ -98,6 +99,7 @@ class NavigateOverBin(py_trees.behaviour.Behaviour):
         import time
         self.start_time = time.time()
         self.start_pos = None
+        self._locked_heading = lock_heading(self.blackboard.get(bb.ROS_NODE))
 
         # Distance to cover = HORIZONTAL component of the last-seen ZED range.
         # The camera looks forward and the bin is on the floor below, so the
@@ -160,6 +162,7 @@ class NavigateOverBin(py_trees.behaviour.Behaviour):
         cmd = ThrusterCommand()
         cmd.header.stamp = node.get_clock().now().to_msg()
         cmd.surge = self.surge
+        cmd.yaw = yaw_hold(node, self._locked_heading)  # advance straight over the bin
         node.cmd_pub.publish(cmd)
         return py_trees.common.Status.RUNNING
 

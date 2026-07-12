@@ -30,6 +30,9 @@ class ModeManagerNode(Node):
         self.armed = False
         self.current_mode = ''
         self.connected = False
+        # Human-readable reason the last arm/disarm attempt failed, surfaced
+        # back to the caller (mission) via the service response message.
+        self._last_arm_reason = ''
 
         # MAVROS state subscriber
         self.state_sub = self.create_subscription(
@@ -106,11 +109,19 @@ class ModeManagerNode(Node):
         """Call MAVROS arming service and verify the state change actually registers on the FCU."""
         if not self.arm_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().error('Arming service not available')
+            self._last_arm_reason = 'MAVROS /mavros/cmd/arming service not available'
+            return False
+
+        # ArduSub rejects arm/disarm before the MAVLink link is up. Report that
+        # clearly instead of firing commands the FCU will just refuse.
+        if not self.connected:
+            self.get_logger().warn('FCU not connected yet — cannot arm (waiting for MAVROS link)')
+            self._last_arm_reason = 'FCU not connected (MAVROS link down)'
             return False
 
         req = CommandBool.Request()
         req.value = arm
-        
+
         self.get_logger().info(f'Sending CommandBool Request -> value={arm}')
         future = self.arm_client.call_async(req)
 
@@ -125,7 +136,14 @@ class ModeManagerNode(Node):
 
         res = future.result()
         if res is None or not res.success:
-            self.get_logger().error(f'MAVROS rejected the {"arm" if arm else "disarm"} command.')
+            result_code = getattr(res, 'result', 'n/a') if res is not None else 'no response'
+            self.get_logger().error(
+                f'MAVROS rejected the {"arm" if arm else "disarm"} command '
+                f'(result={result_code}) — likely a pre-arm check; '
+                'watch /mavros/statustext/recv for the reason.')
+            self._last_arm_reason = (
+                f'FCU rejected {"arm" if arm else "disarm"} '
+                f'(result={result_code}) — check pre-arm / statustext')
             return False
 
         # VERIFICATION LOOP: Poll the state subscriber updates to ensure the FCU accepted it
@@ -189,12 +207,15 @@ class ModeManagerNode(Node):
 
     def _arm_service(self, request, response):
         """Arm or disarm the vehicle."""
+        self._last_arm_reason = ''
         success = self._call_arm(request.data)
         response.success = success
-        response.message = (
-            f'{"Armed" if request.data else "Disarmed"} '
-            f'{"successfully" if success else "failed"}'
-        )
+        if success:
+            response.message = f'{"Armed" if request.data else "Disarmed"} successfully'
+        else:
+            response.message = (
+                f'{"Arm" if request.data else "Disarm"} failed: '
+                f'{self._last_arm_reason or "unknown reason"}')
         return response
 
     def _set_alt_hold_service(self, request, response):

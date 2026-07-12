@@ -15,7 +15,7 @@ import math
 import py_trees
 from .common import (WaitForDetection, WaitForAnyDetection, WaitForDuration,
                      LogBehavior, StopMotion, PublishDepthSetpoint,
-                     SearchForDetection)
+                     SearchForDetection, lock_heading, yaw_hold)
 from .gate import SurgeThrough, HeadingTurn, GATE_SYMBOLS
 from . import blackboard_keys as bb
 
@@ -35,6 +35,7 @@ class NavigateToRecordedPose(py_trees.behaviour.Behaviour):
         self.max_speed = max_speed
         self.timeout = timeout
         self.start_time = None
+        self._locked_heading = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.GATE_POSITION, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.CURRENT_POSE, access=py_trees.common.Access.READ)
@@ -44,6 +45,7 @@ class NavigateToRecordedPose(py_trees.behaviour.Behaviour):
     def initialise(self):
         import time
         self.start_time = time.time()
+        self._locked_heading = lock_heading(self.blackboard.get(bb.ROS_NODE))
 
     def update(self):
         import time
@@ -94,6 +96,7 @@ class NavigateToRecordedPose(py_trees.behaviour.Behaviour):
         cmd.header.stamp = node.get_clock().now().to_msg()
         cmd.surge = max(-self.max_speed, min(self.max_speed, self.max_speed * surge / norm))
         cmd.sway = max(-self.max_speed, min(self.max_speed, self.max_speed * sway / norm))
+        cmd.yaw = yaw_hold(node, self._locked_heading)  # hold the home-facing heading
         node.cmd_pub.publish(cmd)
         return py_trees.common.Status.RUNNING
 

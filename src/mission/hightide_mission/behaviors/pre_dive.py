@@ -21,7 +21,15 @@ class ArmVehicle(py_trees.behaviour.Behaviour):
 
     def initialise(self):
         node = self.blackboard.get(bb.ROS_NODE)
-        self.client = node.create_client(SetBool, '/hightide/arm')
+        # Create the client once; re-creating it every pre-dive retry leaks
+        # clients at the tick rate.
+        if self.client is None:
+            self.client = node.create_client(SetBool, '/hightide/arm')
+        # Clear any previous request so each pre-dive retry actually re-sends
+        # the arm command. Without this, a single early failure (e.g. FCU not
+        # connected yet) is cached and replayed forever — the mission can never
+        # recover even after MAVROS finishes connecting.
+        self.future = None
 
     def update(self):
         node = self.blackboard.get(bb.ROS_NODE)
@@ -44,7 +52,11 @@ class ArmVehicle(py_trees.behaviour.Behaviour):
             node.get_logger().info('Vehicle ARMED')
             return py_trees.common.Status.SUCCESS
         else:
-            node.get_logger().error('Failed to arm')
+            # Surface the reason the FCU/mode_manager gave so a pre-arm failure
+            # or a not-yet-connected link is visible in the mission log.
+            reason = result.message if result else 'no response from arm service'
+            node.get_logger().error(f'Failed to arm: {reason}')
+            self.future = None  # allow a fresh attempt on the next retry
             return py_trees.common.Status.FAILURE
 
 
@@ -60,7 +72,11 @@ class SetAltHoldMode(py_trees.behaviour.Behaviour):
 
     def initialise(self):
         node = self.blackboard.get(bb.ROS_NODE)
-        self.client = node.create_client(Trigger, '/hightide/set_alt_hold')
+        if self.client is None:
+            self.client = node.create_client(Trigger, '/hightide/set_alt_hold')
+        # See ArmVehicle.initialise — reset so each retry re-sends the request
+        # instead of replaying a cached failure.
+        self.future = None
 
     def update(self):
         node = self.blackboard.get(bb.ROS_NODE)
@@ -79,6 +95,9 @@ class SetAltHoldMode(py_trees.behaviour.Behaviour):
         if result and result.success:
             node.get_logger().info('Alt Hold mode SET')
             return py_trees.common.Status.SUCCESS
+        reason = result.message if result else 'no response from set_alt_hold service'
+        node.get_logger().error(f'Failed to set Alt Hold: {reason}')
+        self.future = None
         return py_trees.common.Status.FAILURE
 
 

@@ -13,7 +13,8 @@ inside it.
 import math
 import py_trees
 from .common import (WaitForDetection, WaitForDuration,
-                     LogBehavior, StopMotion, PublishDepthSetpoint)
+                     LogBehavior, StopMotion, PublishDepthSetpoint,
+                     lock_heading, yaw_hold)
 from . import blackboard_keys as bb
 
 
@@ -28,13 +29,14 @@ class NavigateIntoOctagon(py_trees.behaviour.Behaviour):
     """
 
     def __init__(self, name='NavigateIntoOctagon', advance_distance_m=3.0,
-                 surge=0.3, timeout=40.0):
+                 surge=0.3, timeout=20.0):
         super().__init__(name)
         self.advance_distance_m = advance_distance_m
         self.surge = surge
         self.timeout = timeout
         self.start_time = None
         self.start_pos = None
+        self._locked_heading = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.CURRENT_POSE, access=py_trees.common.Access.READ)
@@ -44,6 +46,7 @@ class NavigateIntoOctagon(py_trees.behaviour.Behaviour):
         import time
         self.start_time = time.time()
         self.start_pos = None
+        self._locked_heading = lock_heading(self.blackboard.get(bb.ROS_NODE))
         try:
             pose = self.blackboard.get(bb.CURRENT_POSE)
             if pose is not None:
@@ -82,6 +85,7 @@ class NavigateIntoOctagon(py_trees.behaviour.Behaviour):
         cmd = ThrusterCommand()
         cmd.header.stamp = node.get_clock().now().to_msg()
         cmd.surge = self.surge
+        cmd.yaw = yaw_hold(node, self._locked_heading)  # hold heading while advancing
 
         # The ffc model has no 'octagon' box — the octagon's buoy is the visual
         # cue. If we see the 'buoy', center on it and treat "we're inside" as its

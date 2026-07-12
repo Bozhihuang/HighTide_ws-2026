@@ -18,12 +18,10 @@ def generate_launch_description():
     # ============== ARGUMENTS ==============
     sim_arg = DeclareLaunchArgument('sim', default_value='false',
                                     description='Enable simulation mode')
-    run_mission_arg = DeclareLaunchArgument('run_mission', default_value='true', 
-                                    description='Run the autonomous mission tree')                                 
-    depth_arg = DeclareLaunchArgument('mission_depth', default_value='1.0',
-                                      description='Mission depth in meters')
-    timeout_arg = DeclareLaunchArgument('mission_timeout', default_value='900.0',
-                                        description='Mission timeout in seconds')
+    run_mission_arg = DeclareLaunchArgument('run_mission', default_value='true',
+                                    description='Run the autonomous mission tree')
+    # Mission depth/timeout are configured in params.yaml (mission_node:
+    # mission_depth_m / mission_timeout_sec), not as launch args.
     # Default must match params.yaml's engine_path — this dict is applied AFTER
     # the params file, so an empty default would clobber the yaml value and drop
     # the detector into mock mode. Override at launch with yolo_engine:=/path.
@@ -43,8 +41,6 @@ def generate_launch_description():
     # Resolve Launch Configurations
     sim = LaunchConfiguration('sim')
     run_mission = LaunchConfiguration('run_mission')
-    mission_depth = LaunchConfiguration('mission_depth')
-    mission_timeout = LaunchConfiguration('mission_timeout')
     yolo_engine = LaunchConfiguration('yolo_engine')
     fcu_url = LaunchConfiguration('fcu_url')
     system_id = LaunchConfiguration('system_id')
@@ -196,13 +192,9 @@ def generate_launch_description():
         name='mission_node',
         output='screen',
         condition=IfCondition(run_mission),
-        parameters=[
-            global_config,
-            {
-                'mission_depth_m': mission_depth,
-                'mission_timeout_sec': mission_timeout,
-            }
-        ],
+        # Mission depth/timeout come straight from params.yaml — do NOT pass an
+        # override dict here, or it would clobber the yaml values.
+        parameters=[global_config],
     )
 
     delayed_mission = TimerAction(
@@ -218,7 +210,7 @@ def generate_launch_description():
         )
     )
     return LaunchDescription([
-        sim_arg, depth_arg, timeout_arg, engine_arg, fcu_url_arg, system_id_arg, run_mission_arg,
+        sim_arg, engine_arg, fcu_url_arg, system_id_arg, run_mission_arg,
         mavros_launch,
         zed_launch,
         rc_override,

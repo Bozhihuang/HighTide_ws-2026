@@ -10,9 +10,8 @@ red divider, surge through, then a heading-safe 360° yaw spin for style points.
 """
 
 import py_trees
-from .common import (WaitForDetection, WaitForAnyDetection, PublishThrusterCommand,
-                     CallTriggerService, WaitForDuration, SetBlackboardValue,
-                     LogBehavior, StopMotion, RecordPose, SearchForDetection)
+from .common import (CallTriggerService, LogBehavior, StopMotion, RecordPose,
+                     WaitForStableDetection, YawSweepSearch, lock_heading, yaw_hold)
 from . import blackboard_keys as bb
 
 
@@ -89,6 +88,7 @@ class AlignWithGateHalf(py_trees.behaviour.Behaviour):
         self.center_tol = center_tol
         self.start_time = None
         self.side_recorded = False
+        self._locked_heading = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.CHOSEN_ROLE, access=py_trees.common.Access.READ)
@@ -101,6 +101,7 @@ class AlignWithGateHalf(py_trees.behaviour.Behaviour):
         self.side_recorded = False
         role = self.blackboard.get(bb.CHOSEN_ROLE)
         node = self.blackboard.get(bb.ROS_NODE)
+        self._locked_heading = lock_heading(node)
         node.get_logger().info(f'Aligning with gate half for role: {role}')
 
     def update(self):
@@ -129,6 +130,7 @@ class AlignWithGateHalf(py_trees.behaviour.Behaviour):
 
         cmd = ThrusterCommand()
         cmd.header.stamp = node.get_clock().now().to_msg()
+        cmd.yaw = yaw_hold(node, self._locked_heading)  # hold heading while aligning
 
         if target is None:
             # Symbol not visible yet — creep forward slowly to bring it into view.
@@ -169,12 +171,14 @@ class SurgeThrough(py_trees.behaviour.Behaviour):
         self.duration = duration
         self.speed = speed
         self.start_time = None
+        self._locked_heading = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
 
     def initialise(self):
         import time
         self.start_time = time.time()
+        self._locked_heading = lock_heading(self.blackboard.get(bb.ROS_NODE))
 
     def update(self):
         import time
@@ -186,6 +190,7 @@ class SurgeThrough(py_trees.behaviour.Behaviour):
         cmd = ThrusterCommand()
         cmd.header.stamp = node.get_clock().now().to_msg()
         cmd.surge = self.speed
+        cmd.yaw = yaw_hold(node, self._locked_heading)  # drive straight, hold heading
         node.cmd_pub.publish(cmd)
         return py_trees.common.Status.RUNNING
 
@@ -262,32 +267,25 @@ class HeadingTurn(py_trees.behaviour.Behaviour):
 def create_gate_subtree() -> py_trees.behaviour.Behaviour:
     """Build the Task 1 (Gate) behavior subtree."""
 
-    # Logic to handle Coin Flip (Heads = Front, Tails = Back).
-    # memory=True is REQUIRED here: with memory=False the selector re-ticks
-    # QuickFindGate every tick after it fails, which re-initialises it (fresh
-    # 3s timer, returns RUNNING) and halts the AssumeTails branch — the 180°
-    # turn would get ~one tick per 3 seconds and never complete.
+    # Find the gate WITHOUT assuming which way we're pointing. The old logic
+    # only handled "gate dead ahead" or "gate exactly 180° behind"; if the sub
+    # started 90° off (parallel to the wall) it could never find the gate and
+    # just crept into it. Instead:
+    #   1. If we're already facing the gate, confirm it robustly (4 of the last
+    #      5 frames) so a single false positive can't commit us forward.
+    #   2. Otherwise rotate in place and sweep for the gate at ANY bearing,
+    #      confirming with the same M-of-N filter. Yaw-only — never surge — so a
+    #      wrong orientation can't drive us into a wall while searching.
+    # memory=True: once QuickFindGate fails, stay on the sweep instead of
+    # restarting the quick check every tick.
     find_gate_logic = py_trees.composites.Selector(
-        name='CoinFlipLogic',
+        name='FindGate',
         memory=True,
         children=[
-            # 1. Quick check for Heads (gate in front) — a gate role symbol visible.
-            WaitForAnyDetection('QuickFindGate', GATE_SYMBOLS, timeout=3.0),
-            # 2. If it fails, assume Tails (gate in back). Turn exactly 180° using FOG and search again.
-            py_trees.composites.Sequence(
-                name='AssumeTails',
-                memory=True,
-                children=[
-                    LogBehavior('LogTails', 'Gate not found immediately. Assuming TAILS. Turning 180°.'),
-                    HeadingTurn('Turn180', degrees=180.0, tolerance=2.0, timeout=10.0),
-                    StopMotion('StopTurn'),
-                    WaitForDuration('SettleDown', duration_sec=1.0),
-                    # Creep-and-sweep rather than staring: after the turn the
-                    # gate should be roughly ahead but may be out of frame.
-                    SearchForDetection('FindGateAfterTurn', GATE_SYMBOLS,
-                                       timeout=60.0, surge=0.1),
-                ]
-            )
+            WaitForStableDetection('QuickFindGate', GATE_SYMBOLS,
+                                   window=5, min_hits=4, timeout=5.0),
+            YawSweepSearch('SweepForGate', GATE_SYMBOLS,
+                           window=5, min_hits=4, timeout=45.0),
         ]
     )
 

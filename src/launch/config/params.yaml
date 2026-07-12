@@ -18,9 +18,9 @@ rc_override_node:
 
 depth_controller_node:
   ros__parameters:
-    kp: 200.0
+    kp: 500.0
     ki: 35.0
-    kd: 10.0
+    kd: 0.0
     max_output: 400
     depth_tolerance: 0.1          # meters
     integral_max: 100.0
@@ -48,6 +48,24 @@ target_tracker_node:
     max_tracking_age: 1.0         # seconds before track expires
     iou_threshold: 0.3
     depth_sample_radius: 5        # pixels
+# Classical-CV slalom pole detector (RGB only). Tune against the in-water
+# footage (slalom_woollett / slalom_airbnb) while watching
+# /hightide/slalom_poles_image.
+slalom_pole_detector_node:
+  ros__parameters:
+    image_topic: '/mavros/zed/rgb/color/rect/image'
+    canny_low: 40
+    canny_high: 120
+    min_height_frac: 0.30         # a pole spans >= this fraction of frame height
+    max_width_frac: 0.20          # ...and is narrower than this fraction of width
+    min_aspect: 2.5               # height/width >= this (tall & narrow)
+    close_kernel_h: 25            # vertical morphology to join a pole's two edges
+    red_sat_min: 70               # HSV saturation to call a pole red (underwater red is weak)
+    red_val_min: 40
+    temporal_window: 5            # M-of-N filter: look at the last N frames...
+    temporal_min_hits: 3          # ...and only publish a pole seen in >= M of them
+    cluster_x_tol_frac: 0.06      # x tolerance to match the "same" pole across frames
+    publish_viz: true
 
 # ============== LOCALIZATION ==============
 nav_tier_manager_node:
@@ -64,7 +82,7 @@ waypoint_navigator_node:
     surge_kd: 0.0
     sway_kp: 0.2
     sway_ki: 0.0
-    sway_kd: 0.0
+    sway_kd: 0.05
     yaw_kp: 0.45
     yaw_ki: 0.0
     yaw_kd: 0.2

@@ -6,10 +6,36 @@ ROS2 through the blackboard-stored node reference.
 """
 
 import time as pytime
+from collections import deque
 import py_trees
 from std_msgs.msg import Float64
 from hightide_interfaces.msg import ThrusterCommand, DetectionArray
 from . import blackboard_keys as bb
+
+
+def lock_heading(node):
+    """Snapshot the current FOG/IMU heading (radians) to hold, or None if not
+    yet available. Call in a behavior's initialise() and stash the result."""
+    return getattr(node, 'current_heading', None)
+
+
+def yaw_hold(node, locked_heading, kp=1.5, limit=0.3):
+    """Proportional yaw command that drives the vehicle back to `locked_heading`.
+
+    Nothing else holds heading while a behavior strafes/surges (in MANUAL the
+    FCU won't, and even in ALT_HOLD small disturbances accumulate), so every
+    translating behavior feeds this into cmd.yaw to stay on its locked FOG/IMU
+    heading. Returns 0.0 when heading is unknown so it degrades to "no yaw
+    command" rather than spinning on bad data.
+    """
+    if locked_heading is None:
+        return 0.0
+    current = getattr(node, 'current_heading', None)
+    if current is None:
+        return 0.0
+    from hightide_navigation import normalize_angle
+    err = normalize_angle(locked_heading - current)
+    return max(-limit, min(limit, kp * err))
 
 
 class PublishThrusterCommand(py_trees.behaviour.Behaviour):
@@ -179,6 +205,7 @@ class SearchForDetection(py_trees.behaviour.Behaviour):
         self.min_y_frac = min_y_frac
         self.max_y_frac = max_y_frac
         self.start_time = None
+        self._locked_heading = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.TARGET_DETECTION, access=py_trees.common.Access.WRITE)
@@ -186,6 +213,7 @@ class SearchForDetection(py_trees.behaviour.Behaviour):
 
     def initialise(self):
         self.start_time = pytime.time()
+        self._locked_heading = lock_heading(self.blackboard.get(bb.ROS_NODE))
 
     def _matches(self, det, img_h):
         if det.class_name not in self.target_classes:
@@ -229,6 +257,150 @@ class SearchForDetection(py_trees.behaviour.Behaviour):
         cmd.surge = self.surge
         cmd.sway = self.sway_amplitude * math.sin(
             2.0 * math.pi * elapsed / self.sway_period)
+        cmd.yaw = yaw_hold(node, self._locked_heading)  # hold heading while sweeping
+        node.cmd_pub.publish(cmd)
+        return py_trees.common.Status.RUNNING
+
+
+class WaitForStableDetection(py_trees.behaviour.Behaviour):
+    """
+    Succeed only when a target class shows up in at least `min_hits` of the last
+    `window` ticks — a sliding-window M-of-N filter (default 4-of-5). This is the
+    robust replacement for trusting a single frame: one spurious detection can't
+    commit the mission, and one dropped frame can't reset it either (unlike a
+    strict-consecutive requirement).
+
+    Writes the most recent matching detection to TARGET_DETECTION so a follow-up
+    align/approach behavior has something to work with. Fails on timeout.
+    """
+
+    def __init__(self, name, target_classes, window=5, min_hits=4,
+                 confidence_threshold=0.5, timeout=30.0):
+        super().__init__(name)
+        self.target_classes = set(target_classes)
+        self.window = window
+        self.min_hits = min_hits
+        self.conf_thresh = confidence_threshold
+        self.timeout = timeout
+        self.start_time = None
+        self.history = deque(maxlen=window)
+        self.blackboard = self.attach_blackboard_client()
+        self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.TARGET_DETECTION, access=py_trees.common.Access.WRITE)
+        self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
+
+    def initialise(self):
+        self.start_time = pytime.time()
+        self.history.clear()
+
+    def _best_match(self, detections):
+        """Highest-confidence detection of a target class this tick, or None."""
+        best = None
+        if detections is not None:
+            for det in detections.detections:
+                if (det.class_name in self.target_classes and
+                        det.confidence >= self.conf_thresh):
+                    if best is None or det.confidence > best.confidence:
+                        best = det
+        return best
+
+    def update(self):
+        if (pytime.time() - self.start_time) > self.timeout:
+            return py_trees.common.Status.FAILURE
+
+        try:
+            detections = self.blackboard.get(bb.DETECTIONS)
+        except KeyError:
+            detections = None
+
+        match = self._best_match(detections)
+        self.history.append(match is not None)
+        if match is not None:
+            # Keep the freshest good detection for the downstream aligner.
+            self.blackboard.set(bb.TARGET_DETECTION, match)
+
+        # Only decide once the window is full, so we always judge over N frames.
+        if len(self.history) >= self.window and sum(self.history) >= self.min_hits:
+            node = self.blackboard.get(bb.ROS_NODE)
+            node.get_logger().info(
+                f'{self.name}: stable detection '
+                f'({sum(self.history)}/{self.window} of last frames)')
+            return py_trees.common.Status.SUCCESS
+
+        return py_trees.common.Status.RUNNING
+
+
+class YawSweepSearch(py_trees.behaviour.Behaviour):
+    """
+    Rotate in place looking for any of `target_classes`, confirming via the same
+    sliding-window M-of-N filter. This replaces the old "gate is either dead
+    ahead or exactly 180° behind" assumption: by sweeping yaw it finds the gate
+    at ANY bearing (e.g. 90° off to the side). Heading is driven open-loop at a
+    fixed yaw rate — one direction, so a long-enough timeout covers a full turn.
+
+    Stops (zero motion) and SUCCEEDS on a stable detection; FAILS on timeout.
+    Only yaw is commanded — never surge — so a bad orientation can't drive the
+    sub into a wall while it looks.
+    """
+
+    def __init__(self, name, target_classes, yaw_rate=0.3, window=5, min_hits=4,
+                 confidence_threshold=0.5, timeout=40.0):
+        super().__init__(name)
+        self.target_classes = set(target_classes)
+        self.yaw_rate = yaw_rate
+        self.window = window
+        self.min_hits = min_hits
+        self.conf_thresh = confidence_threshold
+        self.timeout = timeout
+        self.start_time = None
+        self.history = deque(maxlen=window)
+        self.blackboard = self.attach_blackboard_client()
+        self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.TARGET_DETECTION, access=py_trees.common.Access.WRITE)
+        self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
+
+    def initialise(self):
+        self.start_time = pytime.time()
+        self.history.clear()
+
+    def _best_match(self, detections):
+        best = None
+        if detections is not None:
+            for det in detections.detections:
+                if (det.class_name in self.target_classes and
+                        det.confidence >= self.conf_thresh):
+                    if best is None or det.confidence > best.confidence:
+                        best = det
+        return best
+
+    def update(self):
+        node = self.blackboard.get(bb.ROS_NODE)
+
+        if (pytime.time() - self.start_time) > self.timeout:
+            node.cmd_pub.publish(ThrusterCommand())
+            node.get_logger().warn(f'{self.name}: swept without a stable detection')
+            return py_trees.common.Status.FAILURE
+
+        try:
+            detections = self.blackboard.get(bb.DETECTIONS)
+        except KeyError:
+            detections = None
+
+        match = self._best_match(detections)
+        self.history.append(match is not None)
+        if match is not None:
+            self.blackboard.set(bb.TARGET_DETECTION, match)
+
+        if len(self.history) >= self.window and sum(self.history) >= self.min_hits:
+            node.cmd_pub.publish(ThrusterCommand())  # stop rotating
+            node.get_logger().info(
+                f'{self.name}: gate found while sweeping '
+                f'({sum(self.history)}/{self.window} of last frames)')
+            return py_trees.common.Status.SUCCESS
+
+        cmd = ThrusterCommand()
+        cmd.header.stamp = node.get_clock().now().to_msg()
+        cmd.yaw = self.yaw_rate
         node.cmd_pub.publish(cmd)
         return py_trees.common.Status.RUNNING
 

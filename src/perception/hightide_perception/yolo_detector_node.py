@@ -47,16 +47,17 @@ class YoloDetectorNode(Node):
 
         self.bridge = CvBridge()
         self.engine = None
-        self.context = None
+        self.trt_context = None
         self.stream = None
         self.d_input = None
-        self.d_output = None
         self.h_input = None
-        self.h_output = None
         self.use_v3 = False        # TensorRT 10 tensor-name API vs legacy bindings
         self.input_name = None
-        self.output_name = None
-        self.output_shape = None   # Captured at load; the binding API is gone in TRT 10
+        # Engines can expose more than one output tensor (e.g. an NMS/end2end
+        # export). Keep ALL of them so every address gets set before enqueue —
+        # missing one triggers "no address set for output tensor" and leaves the
+        # detection buffer unwritten. Each entry: {name, shape, host, device}.
+        self.outputs = []
         self.num_classes = len(CLASS_NAMES)
 
         # Load TensorRT engine
@@ -94,7 +95,7 @@ class YoloDetectorNode(Node):
             with open(self.engine_path, 'rb') as f:
                 runtime = trt.Runtime(logger)
                 self.engine = runtime.deserialize_cuda_engine(f.read())
-            self.context = self.engine.create_execution_context()
+            self.trt_context = self.engine.create_execution_context()
             self.use_v3 = not hasattr(self.engine, 'num_bindings')
 
             if self.use_v3:
@@ -113,10 +114,12 @@ class YoloDetectorNode(Node):
                         self.h_input = host_mem
                         self.d_input = device_mem
                     else:
-                        self.output_name = name
-                        self.output_shape = tuple(shape)
-                        self.h_output = host_mem
-                        self.d_output = device_mem
+                        self.outputs.append({
+                            'name': name,
+                            'shape': tuple(shape),
+                            'host': host_mem,
+                            'device': device_mem,
+                        })
             else:
                 # Legacy binding API (TensorRT 8.x)
                 for binding in range(self.engine.num_bindings):
@@ -131,15 +134,32 @@ class YoloDetectorNode(Node):
                         self.h_input = host_mem
                         self.d_input = device_mem
                     else:
-                        self.output_shape = tuple(shape)
-                        self.h_output = host_mem
-                        self.d_output = device_mem
+                        self.outputs.append({
+                            'name': self.engine.get_binding_name(binding),
+                            'shape': tuple(shape),
+                            'host': host_mem,
+                            'device': device_mem,
+                        })
 
             self.stream = cuda.Stream()
             self.get_logger().info(
                 f'TensorRT engine loaded: {self.engine_path} '
                 f'(API: {"v3/tensor-name" if self.use_v3 else "v2/bindings"}, '
-                f'output shape: {self.output_shape})')
+                f'outputs: {[(o["name"], o["shape"]) for o in self.outputs]})')
+
+            # Verify the engine's class count matches this node's CLASS_NAMES.
+            # A mismatch (e.g. an 80-class COCO engine vs the 8-class ffc model)
+            # is the #1 cause of impossible class IDs like class_28/class_30.
+            det = self._detection_output()
+            nc4 = self.num_classes + 4
+            if det is not None:
+                dims = [d for d in det['shape'] if d != 1]
+                if nc4 not in dims:
+                    self.get_logger().error(
+                        f'ENGINE/CLASS MISMATCH: detection output {det["shape"]} does not '
+                        f'contain the expected {nc4} features (4 + {self.num_classes} classes). '
+                        f'This engine was NOT built for the {self.num_classes}-class model — '
+                        f're-export from the correct .pt. Detections will be dropped.')
 
         except Exception as e:
             self.get_logger().error(f'Failed to load TensorRT engine: {e}')
@@ -165,16 +185,67 @@ class YoloDetectorNode(Node):
         blob = np.expand_dims(blob, axis=0)  # Add batch
         return blob, scale, dx, dy
 
+    def _detection_output(self):
+        """Pick the raw YOLO detection tensor from the engine's outputs.
+
+        A plain detect export has one output; NMS/end2end exports have several
+        (boxes, scores, ...). We want the raw (1, 4+nc, N) / (1, N, 4+nc)
+        tensor: prefer a tensor named 'output0', else the one that actually has
+        a dim equal to 4+num_classes, else fall back to the largest tensor."""
+        if not self.outputs:
+            return None
+        nc4 = self.num_classes + 4
+        for o in self.outputs:
+            if o['name'] == 'output0':
+                return o
+        for o in self.outputs:
+            if nc4 in tuple(o['shape']):
+                return o
+        return max(self.outputs, key=lambda o: int(np.prod(o['shape'])))
+
     def _postprocess(self, output: np.ndarray, scale, dx, dy, orig_w, orig_h):
         """Parse YOLO output, apply NMS, scale boxes to original image."""
-        # YOLOv8 output: (1, num_classes+4, num_detections) → transpose
-        predictions = output[0].T  # (num_det, num_classes+4)
+        # YOLOv8 raw output is (1, num_classes+4, num_detections). Some exports
+        # emit the transposed (1, num_detections, num_classes+4) instead, so
+        # orient by whichever axis matches 4+num_classes rather than assuming.
+        arr = np.squeeze(np.asarray(output))
+        if arr.ndim != 2:
+            self.get_logger().warn(
+                f'Unexpected detection output shape {np.asarray(output).shape} — skipping frame')
+            return []
+        nc4 = self.num_classes + 4
+        if arr.shape[0] == nc4:          # (4+nc, N) → (N, 4+nc)
+            predictions = arr.T
+        elif arr.shape[1] == nc4:        # already (N, 4+nc)
+            predictions = arr
+        else:                            # ambiguous: features are the shorter axis
+            predictions = arr.T if arr.shape[0] < arr.shape[1] else arr
+
+        # Sanity check: the feature width MUST be 4 + num_classes. If it isn't,
+        # the engine was built for a different number of classes than this node
+        # expects (e.g. an 80-class COCO export instead of the 8-class ffc
+        # model) — argmax would then emit impossible class IDs (28, 30, ...).
+        # Bail loudly rather than publish garbage detections.
+        feat = predictions.shape[1]
+        if feat != nc4:
+            self._diag_tick += 1
+            if self._diag_tick % 40 == 1:
+                self.get_logger().error(
+                    f'Engine output has {feat} features (={feat - 4} classes) but this '
+                    f'node expects {self.num_classes} classes ({nc4} features). WRONG '
+                    f'ENGINE — re-export from the {self.num_classes}-class .pt. '
+                    f'Dropping all detections.')
+            return []
 
         detections = []
         for pred in predictions:
             x_c, y_c, w, h = pred[:4]
             scores = pred[4:]
             class_id = int(np.argmax(scores))
+            # Defensive: never accept an out-of-range class (mismatched engine,
+            # corrupt buffer). CLASS_NAMES only defines 0..num_classes-1.
+            if class_id >= self.num_classes:
+                continue
             confidence = float(scores[class_id])
 
             if confidence < self.conf_thresh:
@@ -234,23 +305,29 @@ class YoloDetectorNode(Node):
         det_list = []
 
         # Run inference if engine available
-        if self.engine is not None and self.context is not None:
+        if self.engine is not None and self.trt_context is not None:
             blob, scale, dx, dy = self._preprocess(cv_image)
             np.copyto(self.h_input, blob.ravel())
             cuda.memcpy_htod_async(self.d_input, self.h_input, self.stream)
             if self.use_v3:
-                self.context.set_tensor_address(self.input_name, int(self.d_input))
-                self.context.set_tensor_address(self.output_name, int(self.d_output))
-                self.context.execute_async_v3(stream_handle=self.stream.handle)
+                self.trt_context.set_tensor_address(self.input_name, int(self.d_input))
+                # Every output tensor needs an address, not just the one we
+                # care about — enqueueV3 refuses to run otherwise.
+                for o in self.outputs:
+                    self.trt_context.set_tensor_address(o['name'], int(o['device']))
+                self.trt_context.execute_async_v3(stream_handle=self.stream.handle)
             else:
-                self.context.execute_async_v2(
-                    bindings=[int(self.d_input), int(self.d_output)],
+                self.trt_context.execute_async_v2(
+                    bindings=[int(self.d_input)] + [int(o['device']) for o in self.outputs],
                     stream_handle=self.stream.handle)
-            cuda.memcpy_dtoh_async(self.h_output, self.d_output, self.stream)
+            for o in self.outputs:
+                cuda.memcpy_dtoh_async(o['host'], o['device'], self.stream)
             self.stream.synchronize()
 
-            output = self.h_output.reshape(self.output_shape)
-            det_list = self._postprocess(output, scale, dx, dy, orig_w, orig_h)
+            det_out = self._detection_output()
+            if det_out is not None:
+                output = det_out['host'].reshape(det_out['shape'])
+                det_list = self._postprocess(output, scale, dx, dy, orig_w, orig_h)
 
         # Build DetectionArray message
         det_array = DetectionArray()
