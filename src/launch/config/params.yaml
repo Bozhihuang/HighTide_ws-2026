@@ -44,12 +44,12 @@ mission_node:
     transit_A_to_octagon_lateral_m: 0.0
 
     # --- Course D distances ---
-    transit_D_to_slalom_forward_m: 0.0
-    transit_D_to_slalom_lateral_m: 0.0
-    transit_D_to_bins_forward_m: 0.0
-    transit_D_to_bins_lateral_m: 0.0
-    transit_D_to_torpedoes_forward_m: 0.0
-    transit_D_to_torpedoes_lateral_m: 0.0
+    transit_D_to_slalom_forward_m: 2.5
+    transit_D_to_slalom_lateral_m: -2.0
+    transit_D_to_bins_forward_m: 1.0
+    transit_D_to_bins_lateral_m: 3.0
+    transit_D_to_torpedoes_forward_m: 3.0
+    transit_D_to_torpedoes_lateral_m: 1.0
     transit_D_to_octagon_forward_m: 0.0
     transit_D_to_octagon_lateral_m: 0.0
 

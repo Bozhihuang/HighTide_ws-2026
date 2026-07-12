@@ -12,6 +12,7 @@ setup(
     license='MIT',
     entry_points={'console_scripts': [
         'yolo_detector_node = hightide_perception.yolo_detector_node:main',
+        'yolo_pt_detector_node = hightide_perception.yolo_pt_detector_node:main',
         'target_tracker_node = hightide_perception.target_tracker_node:main',
         'detection_viz_node = hightide_perception.detection_viz_node:main',
         'slalom_pole_detector_node = hightide_perception.slalom_pole_detector_node:main',

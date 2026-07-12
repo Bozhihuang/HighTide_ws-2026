@@ -93,6 +93,34 @@ def main():
     print('  3. ros2 launch hightide_launch full_system.launch.py')
 
 
+def _deserialize(runtime, engine_path):
+    """Deserialize an engine, handling the Ultralytics metadata header.
+
+    An Ultralytics-exported .engine is NOT a bare TRT plan: it prepends
+    `[4-byte little-endian metadata length][JSON metadata]` before the serialized
+    engine. A raw deserialize_cuda_engine(f.read()) starts at byte 0, hits the
+    JSON instead of the plan's magicTag, and fails ('incompatible serialization
+    version'). Strip the header first; fall back to the whole file for engines
+    built by trtexec/raw TRT (which have no header)."""
+    with open(engine_path, 'rb') as f:
+        data = f.read()
+    # Try the Ultralytics layout: skip 4-byte length + that many metadata bytes.
+    try:
+        meta_len = int.from_bytes(data[:4], byteorder='little', signed=True)
+        if 0 < meta_len < len(data) - 4:
+            data[4:4 + meta_len].decode('utf-8')          # sanity: header is text
+            engine = runtime.deserialize_cuda_engine(data[4 + meta_len:])
+            if engine is not None:
+                return engine
+    except Exception:
+        pass
+    # Fall back to treating the whole file as a raw serialized plan.
+    try:
+        return runtime.deserialize_cuda_engine(data)
+    except Exception:
+        return None
+
+
 def _report_engine_io(engine_path, num_classes):
     """Print the engine's I/O tensor shapes so you can confirm it's a seg engine
     with the right class count before ever running the robot."""
@@ -103,8 +131,13 @@ def _report_engine_io(engine_path, num_classes):
         return
 
     logger = trt.Logger(trt.Logger.WARNING)
-    with open(engine_path, 'rb') as f:
-        engine = trt.Runtime(logger).deserialize_cuda_engine(f.read())
+    runtime = trt.Runtime(logger)
+    engine = _deserialize(runtime, engine_path)
+    if engine is None:
+        print('\n  WARNING: could not deserialize the engine for the I/O check '
+              '(the file is still written). If Ultralytics can load it '
+              '(`YOLO(engine).predict(...)`), the engine itself is fine.')
+        return
 
     print('\nEngine I/O tensors:')
     outputs = []

@@ -22,12 +22,13 @@ def generate_launch_description():
                                     description='Run the autonomous mission tree')
     # Mission depth/timeout are configured in params.yaml (mission_node:
     # mission_depth_m / mission_timeout_sec), not as launch args.
-    # Default must match params.yaml's engine_path — this dict is applied AFTER
-    # the params file, so an empty default would clobber the yaml value and drop
-    # the detector into mock mode. Override at launch with yolo_engine:=/path.
-    engine_arg = DeclareLaunchArgument('yolo_engine',
-                                       default_value='/home/user/models/ffc_seg.engine',
-                                       description='Path to TensorRT engine file')
+    # Detector model — runs through the Ultralytics API (yolo_pt_detector_node),
+    # which handles both a .pt checkpoint and an Ultralytics .engine (and the
+    # end2end (1,300,38) output + engine metadata header the raw node can't).
+    # Override at launch with yolo_model:=/path/to/model.{pt,engine}.
+    model_arg = DeclareLaunchArgument('yolo_model',
+                                      default_value='/home/user/models/ffc_rs_26.pt',
+                                      description='Path to YOLO model (.pt or Ultralytics .engine)')
     
     # Defaults the argument to your verified working tether connection parameter
     fcu_url_arg = DeclareLaunchArgument('fcu_url',
@@ -41,7 +42,7 @@ def generate_launch_description():
     # Resolve Launch Configurations
     sim = LaunchConfiguration('sim')
     run_mission = LaunchConfiguration('run_mission')
-    yolo_engine = LaunchConfiguration('yolo_engine')
+    yolo_model = LaunchConfiguration('yolo_model')
     fcu_url = LaunchConfiguration('fcu_url')
     system_id = LaunchConfiguration('system_id')
 
@@ -111,12 +112,12 @@ def generate_launch_description():
     # /hightide/tracked_targets, which is tracker(detector(ZED RGB)) output.
     yolo_detector = Node(
         package='hightide_perception',
-        executable='yolo_detector_node',
-        name='yolo_detector_node',
+        executable='yolo_pt_detector_node',
+        name='yolo_pt_detector_node',
         output='screen',
         parameters=[
             global_config,
-            {'engine_path': yolo_engine},
+            {'model_path': yolo_model, 'half': True},
         ],
     )
 
@@ -210,7 +211,7 @@ def generate_launch_description():
         )
     )
     return LaunchDescription([
-        sim_arg, engine_arg, fcu_url_arg, system_id_arg, run_mission_arg,
+        sim_arg, model_arg, fcu_url_arg, system_id_arg, run_mission_arg,
         mavros_launch,
         zed_launch,
         rc_override,

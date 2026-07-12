@@ -18,6 +18,7 @@ import numpy as np
 import cv2
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 from hightide_interfaces.msg import Detection, DetectionArray
@@ -46,6 +47,9 @@ class YoloDetectorNode(Node):
         self.declare_parameter('input_height', 640)
         self.declare_parameter('mask_threshold', 0.5)   # sigmoid cutoff for seg masks
         self.declare_parameter('publish_viz', True)
+        # ZED RGB input topic — a param so it can be remapped without a rebuild
+        # (the exact ZED-wrapper topic name has bitten us before).
+        self.declare_parameter('image_topic', '/mavros/zed/rgb/color/rect/image')
 
         self.engine_path = self.get_parameter('engine_path').value
         self.conf_thresh = self.get_parameter('confidence_threshold').value
@@ -54,6 +58,8 @@ class YoloDetectorNode(Node):
         self.input_h = self.get_parameter('input_height').value
         self.mask_thresh = self.get_parameter('mask_threshold').value
         self.publish_viz = self.get_parameter('publish_viz').value
+        self.image_topic = self.get_parameter('image_topic').value
+        self._got_frame = False   # one-shot log the first time an image arrives
 
         self.bridge = CvBridge()
         self.engine = None
@@ -83,17 +89,24 @@ class YoloDetectorNode(Node):
             self.get_logger().warn(
                 'No engine_path set — running in MOCK MODE (no detections)')
 
-        # Subscribers
+        # Subscribers. ZED image topics publish BEST_EFFORT — a default
+        # (RELIABLE) subscriber is QoS-incompatible and receives NOTHING, so the
+        # callback never fires and /hightide/detections stays silent. Match the
+        # publisher's QoS (same fix as the mission node's sensor subscriptions).
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST, depth=5)
         self.image_sub = self.create_subscription(
-            Image, '/mavros/zed/rgb/color/rect/image',
-            self._image_callback, 5)
+            Image, self.image_topic, self._image_callback, sensor_qos)
 
         # Publishers
         self.det_pub = self.create_publisher(DetectionArray, '/hightide/detections', 10)
         if self.publish_viz:
             self.viz_pub = self.create_publisher(Image, '/hightide/detection_image', 5)
 
-        self.get_logger().info('YOLO Detector Node started')
+        self.get_logger().info(
+            f'YOLO Detector Node started — subscribing {self.image_topic} '
+            '(BEST_EFFORT). Waiting for first frame...')
 
     def _load_engine(self):
         """Load TensorRT engine and allocate buffers.
@@ -104,10 +117,33 @@ class YoloDetectorNode(Node):
         ships. self.use_v3 records which execution path to take.
         """
         try:
+            import os
             logger = trt.Logger(trt.Logger.WARNING)
+            trt_ver = getattr(trt, '__version__', '?')
+            size = os.path.getsize(self.engine_path) if os.path.exists(self.engine_path) else -1
+            self.get_logger().info(
+                f'Deserializing engine {self.engine_path} ({size} bytes) with TensorRT {trt_ver}')
             with open(self.engine_path, 'rb') as f:
                 runtime = trt.Runtime(logger)
                 self.engine = runtime.deserialize_cuda_engine(f.read())
+
+            # deserialize_cuda_engine returns None (rather than raising) when the
+            # plan can't be loaded. Catch it here with an actionable message
+            # instead of crashing on None.create_execution_context() below.
+            if self.engine is None:
+                self.get_logger().error(
+                    f'deserialize_cuda_engine returned None — TensorRT {trt_ver} could not '
+                    f'load {self.engine_path}. Almost always one of:\n'
+                    f'  (1) VERSION/GPU MISMATCH — a .engine is NOT portable; it must be '
+                    f'exported ON THIS BOX with THIS TensorRT ({trt_ver}) and this GPU. '
+                    f'Re-run scripts/export_yolo_seg_engine.py here.\n'
+                    f'  (2) CORRUPT/TRUNCATED file — {size} bytes; a few KB or a partial scp '
+                    f'means a bad export/copy.\n'
+                    f'  (3) WRONG FILE — engine_path must point at the .engine, not the .pt/.onnx.\n'
+                    f'  See any [TRT]/[TensorRT] line above for the exact reason.')
+                self.engine = None
+                return
+
             self.trt_context = self.engine.create_execution_context()
             self.use_v3 = not hasattr(self.engine, 'num_bindings')
 
@@ -416,6 +452,12 @@ class YoloDetectorNode(Node):
         except Exception as e:
             self.get_logger().error(f'cv_bridge error: {e}')
             return
+
+        if not self._got_frame:
+            self._got_frame = True
+            self.get_logger().info(
+                f'First image received ({msg.width}x{msg.height}) — '
+                f'{"engine live" if self.engine is not None else "MOCK MODE (no engine)"}')
 
         orig_h, orig_w = cv_image.shape[:2]
         det_list = []
