@@ -134,13 +134,20 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
     """
 
     def __init__(self, name='DeadReckonTransit', forward_m=0.0, lateral_m=0.0,
-                 speed=0.35, pos_tol=0.4, timeout=45.0):
+                 speed=0.35, pos_tol=0.4, timeout=45.0,
+                 target_classes=None, confidence=0.4):
         super().__init__(name)
         self.forward_m = forward_m
         self.lateral_m = lateral_m
         self.speed = speed
         self.pos_tol = pos_tol
         self.timeout = timeout
+        # If the next prop's class(es) appear while transiting, bail early and let
+        # the task's vision take over — the preset distance/time is only a cap so
+        # we don't overshoot when the prop is closer than measured. None = drive
+        # the full blind leg (no vision hand-off).
+        self.target_classes = set(target_classes) if target_classes else None
+        self.confidence = confidence
         self.start_time = None
         self.target = None          # world (x, y) goal (odometry mode only)
         self.dr_duration = None     # timed drive length (dead-reckon mode only)
@@ -152,6 +159,7 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
         self.blackboard.register_key(key=bb.CURRENT_HEADING, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.USE_ODOMETRY, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.DEAD_RECKON_MPS, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
 
     def initialise(self):
@@ -206,6 +214,23 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
             node.get_logger().warn(f'{self.name}: transit timed out — proceeding')
             node.cmd_pub.publish(ThrusterCommand())
             return py_trees.common.Status.SUCCESS
+
+        # Vision hand-off: the instant the next prop is in view, stop transiting
+        # and let the task's own search/align take over (preset distance is just a
+        # ceiling). Applies in both ZED and dead-reckon modes.
+        if self.target_classes:
+            try:
+                detections = self.blackboard.get(bb.DETECTIONS)
+            except KeyError:
+                detections = None
+            if detections:
+                for det in detections.detections:
+                    if (det.class_name in self.target_classes
+                            and det.confidence > self.confidence):
+                        node.cmd_pub.publish(ThrusterCommand())
+                        node.get_logger().info(
+                            f'{self.name}: {det.class_name} in view — handing off to vision')
+                        return py_trees.common.Status.SUCCESS
 
         # ---- Dead-reckon (open-loop timed) ----
         if self.target is None:

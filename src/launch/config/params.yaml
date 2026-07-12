@@ -32,7 +32,8 @@ mission_node:
     #                ZED odometry is down/unreliable in the pool.
     # Applies to the inter-mission transits and the bin/octagon "advance N m" legs.
     movement_mode: 'zed'              # 'zed' or 'dead_reckon'
-    dead_reckon_mps: 0.4              # calibrated forward speed (m/s) at transit thrust
+    transit_thrust: 0.35             # POWER (normalized cmd) the transits drive at (both modes)
+    dead_reckon_mps: 0.4             # measured speed (m/s) AT transit_thrust; sets time = dist/mps
 
     # ---- Course + inter-mission dead-reckon transits ----
     # Courses A and D are DIFFERENT layouts. Fill in BOTH sets; `course` picks

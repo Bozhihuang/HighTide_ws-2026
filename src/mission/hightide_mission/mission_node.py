@@ -105,7 +105,13 @@ class MissionNode(Node):
         # odometry (accurate, closed-loop); 'dead_reckon' = open-loop timed drive
         # (distance / dead_reckon_mps) for when ZED odometry is down/unreliable.
         self.declare_parameter('movement_mode', 'zed')             # 'zed' or 'dead_reckon'
-        self.declare_parameter('dead_reckon_mps', 0.4)             # calibrated fwd speed (m/s)
+        # transit_thrust = the POWER (normalized -1..1 cmd) the transit legs drive
+        # at, in BOTH modes. dead_reckon_mps = the actual speed the vehicle moves
+        # AT that thrust (measure it in-pool) — used only in dead_reckon mode to
+        # turn each leg's distance into a drive TIME (time = distance / mps). The
+        # two are coupled: re-measure mps whenever you change transit_thrust.
+        self.declare_parameter('transit_thrust', 0.35)             # drive power for transits
+        self.declare_parameter('dead_reckon_mps', 0.4)             # measured speed (m/s) at transit_thrust
 
         self.declare_parameter('course', 'A')                      # 'A' or 'D'
         # Props are far apart, so between tasks we blind-drive a fixed body-frame
@@ -134,6 +140,7 @@ class MissionNode(Node):
         mode = str(self.get_parameter('movement_mode').value).lower()
         self.use_odometry = (mode != 'dead_reckon')   # anything but dead_reckon = zed
         self.dead_reckon_mps = float(self.get_parameter('dead_reckon_mps').value)
+        self.transit_thrust = float(self.get_parameter('transit_thrust').value)
 
         # Selected course (A/D) — picks which transit distance set is used.
         self.course = str(self.get_parameter('course').value).upper()
@@ -283,10 +290,22 @@ class MissionNode(Node):
         # A blind dead-reckon leg to cross the open water into the NEXT prop's
         # vicinity before that task's visual search runs. Distances come from
         # ROS params (0.0 = disabled); course A/D mirrors the lateral sign.
+        # The prop class(es) that end each transit early — the moment the next
+        # task's target is in view, the transit bails and hands off to vision
+        # (the preset distance is only a ceiling). Class names per the ffc model.
+        transit_targets = {
+            'to_slalom': {'slalom'},
+            'to_bins': {'fire', 'blood'},
+            'to_torpedoes': {'fire', 'blood'},
+            'to_octagon': {'buoy', 'octagon_table'},
+        }
+
         def transit(name, leg):
             fwd = self.get_parameter(f'transit_{self.course}_{leg}_forward_m').value
             lat = self.get_parameter(f'transit_{self.course}_{leg}_lateral_m').value
-            return DeadReckonTransit(name, forward_m=fwd, lateral_m=lat)
+            return DeadReckonTransit(name, forward_m=fwd, lateral_m=lat,
+                                     speed=self.transit_thrust,
+                                     target_classes=transit_targets.get(leg))
 
         tasks = py_trees.composites.Sequence(
             name='CompetitionTasks',
