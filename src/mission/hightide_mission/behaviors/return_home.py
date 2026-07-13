@@ -16,7 +16,7 @@ import py_trees
 from .common import (WaitForDetection, WaitForAnyDetection, WaitForDuration,
                      LogBehavior, StopMotion, PublishDepthSetpoint,
                      SearchForDetection, lock_heading, yaw_hold,
-                     distribute_timeout)
+                     distribute_timeout, pose_yaw)
 from .gate import SurgeThrough, HeadingTurn, GATE_SYMBOLS
 from . import blackboard_keys as bb
 
@@ -61,9 +61,13 @@ class NavigateToRecordedPose(py_trees.behaviour.Behaviour):
         try:
             target = self.blackboard.get(bb.GATE_POSITION)
             current = self.blackboard.get(bb.CURRENT_POSE)
-            yaw = self.blackboard.get(bb.CURRENT_HEADING)
         except KeyError:
-            target = current = yaw = None
+            target = current = None
+        # Yaw from the ZED pose itself (same frame as the positions) — using
+        # the IMU heading here rotates the drive direction by the arbitrary
+        # IMU-vs-ZED frame offset and the sub spirals instead of homing. See
+        # common.pose_yaw().
+        yaw = pose_yaw(current)
 
         # Without a recorded pose or live odometry we can't home — skip to the
         # visual search rather than driving blind.

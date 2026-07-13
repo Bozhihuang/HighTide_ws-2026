@@ -3,7 +3,7 @@ mission_node:
   ros__parameters:
     mission_depth_m: 1.0           # Competition pool depth target
     mission_timeout_sec: 900.0     # 15 minute mission window
-    tick_rate: 10.0                # Behavior tree tick rate (Hz)
+    tick_rate: 20.0                # Behavior tree tick rate (Hz) — matches pidtest's 20 Hz control loop
     chosen_role: 'survey_repair'   # Pre-race coin-flip choice: survey_repair | search_rescue
 
     # Per-mission time budgets (s). Each subtree splits its budget across its own
@@ -30,13 +30,32 @@ mission_node:
     # Turn a set amount, then advance. Uses the movement_mode below for the
     # advance. Set initial_turn_deg to 0 to skip the turn, initial_forward_m to 0
     # to skip the advance.
-    # Turn is RELATIVE to the heading at submerge. Positive = counterclockwise
-    # (left, ENU convention); the turn always goes the SHORT way to the final
-    # heading, so 270 executes as a 90° clockwise turn (same end heading).
+    # Turn is RELATIVE to the heading at submerge, compass-style: positive =
+    # CLOCKWISE (right, viewed from above), negative = counterclockwise. The
+    # turn always goes the SHORT way to the final heading, so 270 executes as
+    # a 90° counterclockwise turn (same end heading).
     # Set per run to 90 / 180 / 270 depending on start-dock orientation; 0 = none.
     initial_turn_deg: 90.0           # degrees to rotate after submerge: 90 / 180 / 270 (0 = none)
     initial_forward_m: 2.0           # metres to advance after the turn
     initial_turn_timeout_sec: 15.0   # safety cap on the turn (270° needs more time than 90°)
+
+    # ---- Heading hold (every translating behavior) ----
+    # PD gains + clamp for the yaw correction that keeps the sub on its locked
+    # FOG/IMU heading while it surges/strafes. Defaults = the pool-proven
+    # pidtest companion heading-hold (kp 0.45 / kd 0.2). ALL live-tunable
+    # without restart:  ros2 param set /mission_node yaw_hold_kp 0.3
+    # If the sub WEAVES/crabs while driving straight, lower kp (or raise kd);
+    # if it drifts off heading and corrects too lazily, raise kp.
+    # yaw_hold_sign: correction direction (-1.0 = validated convention, same
+    # as pidtest yaw_command_sign). Flip to 1.0 LIVE to test the opposite:
+    #   ros2 param set /mission_node yaw_hold_sign 1.0
+    # Quick isolation test: set yaw_hold_kp to 0.0 to disable heading
+    # correction entirely — if the sub STILL crabs, the problem is hardware
+    # (thruster trim/direction), not the yaw correction.
+    yaw_hold_kp: 0.45
+    yaw_hold_kd: 0.2
+    yaw_hold_limit: 1.0        # pidtest's companion is unclamped (±1) — lower only if a glitch ever spins the sub
+    yaw_hold_sign: -1.0
 
     # ---- Movement mode: ZED odometry vs open-loop dead reckoning ----
     # 'zed'        = measure travel with ZED odometry (accurate, closed-loop).
@@ -44,13 +63,15 @@ mission_node:
     #                ZED odometry is down/unreliable in the pool.
     # Applies to the inter-mission transits and the bin/octagon "advance N m" legs.
     movement_mode: 'zed'              # 'zed' or 'dead_reckon'
-    transit_thrust: 0.35             # POWER cap (PID output clamp) for transits/advance
+    # ZED transits are a LITERAL PORT of the pidtest surge loop. For identical
+    # motion, these MUST be the values you ran pidtest with:
+    #   transit_thrust   = pidtest max_output   (its default: 0.6)
+    #   transit_kp/ki/kd = the surge gains you converged on in the pool
+    transit_thrust: 0.6              # POWER cap (PID output clamp), = pidtest max_output
     dead_reckon_mps: 0.4             # measured speed (m/s) AT transit_thrust; sets time = dist/mps
-    # Position-PID gains for ZED-mode transits/advance. SET THESE TO THE SURGE
-    # GAINS YOU TUNED IN THE POOL pidtest so mission moves are as accurate as it.
-    transit_kp: 0.2
-    transit_ki: 0.0
-    transit_kd: 0.05
+    transit_kp: 0.2                  # <<< REPLACE with your tuned pidtest surge kp
+    transit_ki: 0.0                  # <<< REPLACE with your tuned pidtest surge ki
+    transit_kd: 0.05                 # <<< REPLACE with your tuned pidtest surge kd
 
     # ---- Course + inter-mission dead-reckon transits ----
     # Courses A and D are DIFFERENT layouts. Fill in BOTH sets; `course` picks

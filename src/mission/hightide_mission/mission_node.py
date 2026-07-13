@@ -107,9 +107,22 @@ class MissionNode(Node):
         # Opening maneuver, right after submerge: turn a set amount, then advance.
         # initial_turn_deg = 0 skips the turn; initial_forward_m = 0 skips the
         # advance. The forward move uses the movement_mode (ZED / dead-reckon).
-        self.declare_parameter('initial_turn_deg', 0.0)            # e.g. 90 / 180 / 270 (0 = none)
+        self.declare_parameter('initial_turn_deg', 0.0)            # compass-style: + = CLOCKWISE. 90/180/270 (0 = none)
         self.declare_parameter('initial_forward_m', 2.0)          # advance after the turn
         self.declare_parameter('initial_turn_timeout_sec', 15.0)  # give 270° enough time
+
+        # Heading-hold PD gains + clamp + sign used by EVERY translating
+        # behavior (common.yaw_hold reads these off the node). Defaults are the
+        # pool-proven pidtest companion values (kp 0.45 / kd 0.2). Live-tunable
+        # in-water:  ros2 param set /mission_node yaw_hold_kp 0.3
+        # P-only or too-high kp makes the sub WEAVE/crab instead of driving
+        # straight (observed in pool with the old hardcoded P-only 1.5).
+        # yaw_hold_sign flips the correction direction (pidtest's
+        # yaw_command_sign equivalent); -1.0 is the validated convention.
+        self.declare_parameter('yaw_hold_kp', 0.45)
+        self.declare_parameter('yaw_hold_kd', 0.2)
+        self.declare_parameter('yaw_hold_limit', 0.25)
+        self.declare_parameter('yaw_hold_sign', -1.0)
 
         self.declare_parameter('movement_mode', 'zed')             # 'zed' or 'dead_reckon'
         # transit_thrust = the POWER (normalized -1..1 cmd) the transit legs drive
@@ -152,6 +165,15 @@ class MissionNode(Node):
         self.initial_turn_deg = float(self.get_parameter('initial_turn_deg').value)
         self.initial_forward_m = float(self.get_parameter('initial_forward_m').value)
         self.initial_turn_timeout = float(self.get_parameter('initial_turn_timeout_sec').value)
+
+        # Heading-hold gains as plain attributes — common.yaw_hold reads them
+        # via getattr every tick, so the set-parameters callback below makes
+        # `ros2 param set` take effect immediately (no restart).
+        self.yaw_hold_kp = float(self.get_parameter('yaw_hold_kp').value)
+        self.yaw_hold_kd = float(self.get_parameter('yaw_hold_kd').value)
+        self.yaw_hold_limit = float(self.get_parameter('yaw_hold_limit').value)
+        self.yaw_hold_sign = float(self.get_parameter('yaw_hold_sign').value)
+        self.add_on_set_parameters_callback(self._on_set_parameters)
 
         # Movement mode → blackboard flag the nav behaviors read.
         mode = str(self.get_parameter('movement_mode').value).lower()
@@ -283,11 +305,22 @@ class MissionNode(Node):
             + f' | Course: {self.course}')
         self.get_logger().info(
             'Opening maneuver: '
-            + (f'turn {self.initial_turn_deg:.0f}deg'
+            + (f'turn {abs(self.initial_turn_deg):.0f}deg '
+               + ('CW' if self.initial_turn_deg > 0 else 'CCW')
                if abs(self.initial_turn_deg) > 0.01 else 'no turn')
             + ' + '
             + (f'advance {self.initial_forward_m:.1f}m'
                if self.initial_forward_m > 0.01 else 'no advance'))
+
+    def _on_set_parameters(self, params):
+        """Apply live `ros2 param set` updates for the in-water tuning knobs."""
+        from rcl_interfaces.msg import SetParametersResult
+        for p in params:
+            if p.name in ('yaw_hold_kp', 'yaw_hold_kd',
+                          'yaw_hold_limit', 'yaw_hold_sign'):
+                setattr(self, p.name, float(p.value))
+                self.get_logger().info(f'{p.name} -> {float(p.value)}')
+        return SetParametersResult(successful=True)
 
     def _build_tree(self) -> py_trees.trees.BehaviourTree:
         """Build the full competition behavior tree."""
@@ -302,8 +335,10 @@ class MissionNode(Node):
             WaitForStable('Stabilize'),
         ]
         if abs(self.initial_turn_deg) > 0.01:
+            # The param is compass-style (positive = clockwise, what a driver
+            # expects); HeadingTurn is ENU (positive = counterclockwise) — negate.
             predive_children.append(
-                HeadingTurn('InitialTurn', degrees=self.initial_turn_deg,
+                HeadingTurn('InitialTurn', degrees=-self.initial_turn_deg,
                             tolerance=3.0, timeout=self.initial_turn_timeout))
         if self.initial_forward_m > 0.01:
             predive_children.append(

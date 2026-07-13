@@ -20,29 +20,80 @@ def lock_heading(node):
     return getattr(node, 'current_heading', None)
 
 
-def yaw_hold(node, locked_heading, kp=1.5, limit=0.3):
-    """Proportional yaw command that drives the vehicle back to `locked_heading`.
+def yaw_hold(node, locked_heading, kp=None, kd=None, limit=None):
+    """PD yaw command that drives the vehicle back to `locked_heading`.
 
-    Nothing else holds heading while a behavior strafes/surges (in MANUAL the
-    FCU won't, and even in ALT_HOLD small disturbances accumulate), so every
-    translating behavior feeds this into cmd.yaw to stay on its locked FOG/IMU
-    heading. Returns 0.0 when heading is unknown so it degrades to "no yaw
-    command" rather than spinning on bad data.
+    This mirrors the pool-proven pidtest companion heading hold: PD (not
+    P-only) with the tuned stable gains kp=0.45 / kd=0.2. The derivative term
+    matters — an undamped P heading-hold limit-cycles on a vehicle with yaw
+    inertia, constantly banging yaw left/right, which on real (asymmetric)
+    thrusters bleeds into lateral drift: the sub crabs instead of driving
+    straight. Derivative state is kept on the node; a >0.5 s gap between
+    calls (behavior handoff) resets it so a stale error can't spike the D.
+
+    Gains default to the mission node's `yaw_hold_kp` / `yaw_hold_kd` /
+    `yaw_hold_limit` / `yaw_hold_sign` ROS params — ALL live-tunable in-water
+    (`ros2 param set /mission_node yaw_hold_kp 0.3`) unless the caller
+    overrides them. Returns 0.0 when heading is unknown so it degrades to
+    "no yaw command" rather than spinning on bad data.
 
     IMU yaw (ENU) is CCW-positive, but ThrusterCommand.yaw / ArduSub ch4 are
-    CW-positive (see waypoint_navigator_node's yaw_command_sign) — the raw PID
-    output must be negated or this becomes positive feedback: any drift off
-    locked_heading gets reinforced instead of corrected, so the vehicle spins
-    instead of holding straight while it surges.
+    CW-positive — hence yaw_hold_sign = -1.0, the SAME convention pidtest's
+    yaw_command_sign uses and that HeadingTurn converged with in the water.
+    Set yaw_hold_sign to +1.0 live if you ever need to test the opposite.
+    Note the rc_override deadzone (0.05): outputs below it go out as neutral
+    PWM, and in ALT_HOLD the FCU then holds heading itself — small errors are
+    deliberately left to ArduSub instead of fighting it.
     """
     if locked_heading is None:
         return 0.0
     current = getattr(node, 'current_heading', None)
     if current is None:
         return 0.0
+    if kp is None:
+        kp = float(getattr(node, 'yaw_hold_kp', 0.45))
+    if kd is None:
+        kd = float(getattr(node, 'yaw_hold_kd', 0.2))
+    if limit is None:
+        limit = float(getattr(node, 'yaw_hold_limit', 0.25))
+    sign = float(getattr(node, 'yaw_hold_sign', -1.0))
     from hightide_navigation import normalize_angle
     err = normalize_angle(locked_heading - current)
-    return max(-limit, min(limit, -kp * err))
+
+    now = pytime.time()
+    d = 0.0
+    state = getattr(node, '_yaw_hold_state', None)
+    if state is not None:
+        prev_err, prev_t = state
+        dt = now - prev_t
+        if 0.0 < dt < 0.5:
+            d = normalize_angle(err - prev_err) / dt
+    node._yaw_hold_state = (err, now)
+
+    out = sign * (kp * err + kd * d)
+    return max(-limit, min(limit, out))
+
+
+def pose_yaw(pose):
+    """Yaw (radians) of an Odometry message, in the SAME frame as its position.
+
+    All world<->body geometry done on CURRENT_POSE must use this — NOT the
+    IMU/FOG heading. The IMU yaw reference is arbitrary relative to the ZED
+    odometry frame (ZED zeroes wherever the camera pointed at boot), and
+    decomposing ZED world errors with an offset heading rotates every commanded
+    velocity by that offset: instead of driving at its target the vehicle
+    pursues it in a spiral, and at a ~90° offset it orbits the target in a
+    circle without ever arriving (observed in-pool on the opening advance).
+    The IMU heading remains correct for yaw_hold — holding a heading needs no
+    shared frame with the position source.
+    """
+    if pose is None:
+        return None
+    from hightide_navigation import quaternion_to_yaw
+    try:
+        return quaternion_to_yaw(pose.pose.pose.orientation)
+    except Exception:
+        return None
 
 
 def read_use_odometry(blackboard, default=True):
@@ -163,10 +214,19 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
         self.target_classes = set(target_classes) if target_classes else None
         self.confidence = confidence
         self.start_time = None
-        self.target = None          # world (x, y) goal (odometry mode only)
-        self.dr_duration = None     # timed drive length (dead-reckon mode only)
+        self.target = None          # world (x, y) goal ('world' mode only)
+        self.dr_duration = None     # timed drive length ('timed' mode only)
         self.dr_surge = 0.0
         self.dr_sway = 0.0
+        # 'zed'   = closed-loop to a world target — a literal port of the
+        #           pool-proven pidtest surge loop (see initialise)
+        # 'timed' = open-loop dead reckon; None = zero offset, nothing to do
+        self.mode = None
+        self.pure_forward = False
+        self.companion_yaw_pid = None
+        self.start_pos = None
+        self.leg_mag = 0.0
+        self.effective_timeout = timeout
         self._locked_heading = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.CURRENT_POSE, access=py_trees.common.Access.READ)
@@ -182,42 +242,69 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
         self.last_time = self.start_time
         self.target = None
         self.dr_duration = None
+        self.mode = None
+        self.pure_forward = False
+        self.start_pos = None
+        self.effective_timeout = self.timeout
         node = self.blackboard.get(bb.ROS_NODE)
         self._locked_heading = lock_heading(node)
-        # Fresh position PIDs each leg (output clamped to the speed cap), used by
-        # the ZED closed-loop branch.
+        # Fresh position PIDs each leg (output clamped to the speed cap) — the
+        # same PIDController + clamp arrangement as pidtest's main axis.
         self.surge_pid = PIDController(self.kp, self.ki, self.kd,
                                        output_min=-self.speed, output_max=self.speed)
         self.sway_pid = PIDController(self.kp, self.ki, self.kd,
                                       output_min=-self.speed, output_max=self.speed)
+        # Companion heading hold — pidtest's companion PID, verbatim (the
+        # PIDController class with its filtered derivative), gains from the
+        # live yaw_hold params. Fresh each leg, like pidtest resets on step.
+        self.companion_yaw_pid = PIDController(
+            float(getattr(node, 'yaw_hold_kp', 0.45)), 0.0,
+            float(getattr(node, 'yaw_hold_kd', 0.2)))
 
         mag = math.hypot(self.forward_m, self.lateral_m)
+        self.leg_mag = mag
         if mag < 1e-6:
             return  # zero offset — update() succeeds immediately
+
+        # Bound the leg by its DISTANCE: 3x the nominal travel time (min 8 s).
+        # The flat 45 s default let a misbehaving 2 m leg grind against a wall
+        # for most of a minute before giving up.
+        mps = read_dead_reckon_mps(self.blackboard)
+        self.effective_timeout = min(
+            self.timeout, max(8.0, 3.0 * mag / max(mps, 1e-3)))
 
         use_odom = read_use_odometry(self.blackboard)
         if use_odom:
             try:
                 pose = self.blackboard.get(bb.CURRENT_POSE)
-                yaw = self.blackboard.get(bb.CURRENT_HEADING)
             except KeyError:
-                pose = yaw = None
+                pose = None
+            # Yaw from the ZED pose itself, NOT the IMU — see pose_yaw().
+            yaw = pose_yaw(pose)
             if pose is not None and yaw is not None:
-                # Body-frame (forward=surge, lateral=sway) → world displacement,
-                # the exact inverse of update()'s world→body decomposition so a
-                # lateral offset commands the matching +sway sign.
+                # Literal pidtest step: world target = pos + offset rotated by
+                # the ZED pose's own yaw (pidtest builds the same thing from
+                # its auto-calibrated imu+frame_offset heading). Pure-forward
+                # legs behave exactly like a pidtest surge step: signed
+                # body-projected error, NO sway ever commanded.
+                p = pose.pose.pose.position
+                self.start_pos = (p.x, p.y)
                 cos_y, sin_y = math.cos(yaw), math.sin(yaw)
                 wx = self.forward_m * cos_y - self.lateral_m * sin_y
                 wy = self.forward_m * sin_y + self.lateral_m * cos_y
-                p = pose.pose.pose.position
                 self.target = (p.x + wx, p.y + wy)
+                self.pure_forward = abs(self.lateral_m) < 1e-6
+                self.mode = 'zed'
                 node.get_logger().info(
-                    f'{self.name}: ZED transit fwd={self.forward_m:.1f} lat={self.lateral_m:.1f}m')
+                    f'{self.name}: ZED transit fwd={self.forward_m:.1f} '
+                    f'lat={self.lateral_m:.1f}m'
+                    + (' (pidtest surge law)' if self.pure_forward else '')
+                    + f' (timeout {self.effective_timeout:.0f}s)')
                 return
 
         # Dead-reckon mode (or odometry requested but unavailable): drive the
         # offset direction open-loop for distance/mps seconds.
-        mps = read_dead_reckon_mps(self.blackboard)
+        self.mode = 'timed'
         self.dr_duration = mag / max(mps, 1e-3)
         self.dr_surge = self.speed * self.forward_m / mag
         self.dr_sway = self.speed * self.lateral_m / mag
@@ -230,9 +317,9 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
         node = self.blackboard.get(bb.ROS_NODE)
 
         # Zero offset → nothing to do.
-        if self.target is None and self.dr_duration is None:
+        if self.mode is None:
             return py_trees.common.Status.SUCCESS
-        if (pytime.time() - self.start_time) > self.timeout:
+        if (pytime.time() - self.start_time) > self.effective_timeout:
             node.get_logger().warn(f'{self.name}: transit timed out — proceeding')
             node.cmd_pub.publish(ThrusterCommand())
             return py_trees.common.Status.SUCCESS
@@ -255,7 +342,7 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
                         return py_trees.common.Status.SUCCESS
 
         # ---- Dead-reckon (open-loop timed) ----
-        if self.target is None:
+        if self.mode == 'timed':
             if (pytime.time() - self.start_time) >= self.dr_duration:
                 node.cmd_pub.publish(ThrusterCommand())
                 node.get_logger().info(f'{self.name}: dead-reckon leg complete')
@@ -268,40 +355,63 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
             node.cmd_pub.publish(cmd)
             return py_trees.common.Status.RUNNING
 
-        # ---- ZED odometry (closed-loop to world target) ----
+        # ---- ZED mode: the pidtest surge loop, ported verbatim ----
+        from hightide_navigation import normalize_angle
         try:
             current = self.blackboard.get(bb.CURRENT_POSE)
-            yaw = self.blackboard.get(bb.CURRENT_HEADING)
         except KeyError:
-            current = yaw = None
+            current = None
+        yaw = pose_yaw(current)
         if current is None or yaw is None:
             node.cmd_pub.publish(ThrusterCommand())   # lost odom mid-leg — stop, best effort
             return py_trees.common.Status.SUCCESS
-
         pos = current.pose.pose.position
+
+        # Overshoot guard: if we've physically moved well past the leg length
+        # the target estimate is bad (odometry drift/jump) — stop chasing it.
+        traveled = math.hypot(pos.x - self.start_pos[0], pos.y - self.start_pos[1])
+        if traveled > 1.5 * self.leg_mag + 0.5:
+            node.cmd_pub.publish(ThrusterCommand())
+            node.get_logger().warn(
+                f'{self.name}: traveled {traveled:.1f}m on a {self.leg_mag:.1f}m '
+                'leg — bad odometry? stopping here')
+            return py_trees.common.Status.SUCCESS
+
+        # pidtest's _measure(): world error projected onto the body axes with
+        # the current ZED-frame heading. e_surge is SIGNED, so an overshoot
+        # drives back instead of latching done.
         dx = self.target[0] - pos.x
         dy = self.target[1] - pos.y
-        dist = math.hypot(dx, dy)
-        if dist < self.pos_tol:
+        cos_y, sin_y = math.cos(yaw), math.sin(yaw)
+        e_surge = dx * cos_y + dy * sin_y
+        e_sway = -dx * sin_y + dy * cos_y
+
+        done = (abs(e_surge) < self.pos_tol if self.pure_forward
+                else math.hypot(dx, dy) < self.pos_tol)
+        if done:
             node.cmd_pub.publish(ThrusterCommand())
             node.get_logger().info(f'{self.name}: reached transit target')
             return py_trees.common.Status.SUCCESS
 
-        # World error → body-frame remaining distance (surge ahead, +sway right),
-        # then PID each axis on that distance — SAME law as the pool pidtest, so
-        # the drive ramps down onto the target instead of constant thrust. Heading
-        # held by the FOG.
         now = pytime.time()
         dt = now - self.last_time
         self.last_time = now
-        cos_y, sin_y = math.cos(yaw), math.sin(yaw)
-        e_surge = dx * cos_y + dy * sin_y
-        e_sway = -dx * sin_y + dy * cos_y
+
         cmd = ThrusterCommand()
         cmd.header.stamp = node.get_clock().now().to_msg()
         cmd.surge = self.surge_pid.compute(e_surge, dt)
-        cmd.sway = self.sway_pid.compute(e_sway, dt)
-        cmd.yaw = yaw_hold(node, self._locked_heading)
+        # pidtest never commands sway on a surge run — neither do we on a
+        # pure-forward leg. Lateral legs PID the sway axis the same way.
+        cmd.sway = 0.0 if self.pure_forward else self.sway_pid.compute(e_sway, dt)
+        # pidtest's companion stabilizer, verbatim:
+        #   yaw_error = ref_yaw - imu_heading; cmd.yaw = sign * pid(yaw_error)
+        imu_now = getattr(node, 'current_heading', None)
+        if self._locked_heading is not None and imu_now is not None:
+            yaw_err = normalize_angle(self._locked_heading - imu_now)
+            y = (float(getattr(node, 'yaw_hold_sign', -1.0))
+                 * self.companion_yaw_pid.compute(yaw_err, dt))
+            lim = float(getattr(node, 'yaw_hold_limit', 1.0))
+            cmd.yaw = max(-lim, min(lim, y))
         node.cmd_pub.publish(cmd)
         return py_trees.common.Status.RUNNING
 
