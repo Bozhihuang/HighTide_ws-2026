@@ -132,6 +132,40 @@ class ActuatorDriverNode(Node):
             f'{name} failed after {self.fire_max_attempts} attempts')
         return False
 
+    def _actuate_torpedo_relay(self, name: str) -> bool:
+        """Pulse a torpedo relay `fire_max_attempts` times in a row, unlike
+        _actuate_relay which stops at the first successful pulse. A single
+        pulse doesn't reliably release the launcher mechanism, so torpedoes
+        get a full run of repeat pulses instead of a retry-until-success loop."""
+        relay_pin = self.relays.get(name)
+        if relay_pin is None:
+            return False
+
+        any_success = False
+        for attempt in range(1, self.fire_max_attempts + 1):
+            self.get_logger().info(
+                f'Actuating {name} (Relay {relay_pin}) for {self.pulse_ms}ms '
+                f'(pulse {attempt}/{self.fire_max_attempts})')
+
+            success_on = self._set_relay(relay_pin, 1.0)
+            if not success_on:
+                self.get_logger().error(f'Failed to turn ON {name} (pulse {attempt})')
+                continue
+
+            pytime.sleep(self.pulse_ms / 1000.0)
+
+            success_off = self._set_relay(relay_pin, 0.0)
+            if not success_off:
+                self.get_logger().error(f'Failed to turn OFF {name} (pulse {attempt})')
+                continue
+
+            any_success = True
+
+        if not any_success:
+            self.get_logger().error(
+                f'{name} failed all {self.fire_max_attempts} pulses')
+        return any_success
+
     def _fire_torpedo(self, request, response):
         tube_id = request.tube_id
 
@@ -141,7 +175,7 @@ class ActuatorDriverNode(Node):
             return response
 
         pin_name = f'torpedo_{tube_id}'
-        success = self._actuate_relay(pin_name)
+        success = self._actuate_torpedo_relay(pin_name)
         
         if success:
             self.torpedoes_fired[tube_id] = True
