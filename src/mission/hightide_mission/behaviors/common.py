@@ -135,13 +135,21 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
 
     def __init__(self, name='DeadReckonTransit', forward_m=0.0, lateral_m=0.0,
                  speed=0.35, pos_tol=0.4, timeout=45.0,
-                 target_classes=None, confidence=0.4):
+                 target_classes=None, confidence=0.4,
+                 kp=0.2, ki=0.0, kd=0.05):
         super().__init__(name)
         self.forward_m = forward_m
         self.lateral_m = lateral_m
-        self.speed = speed
+        self.speed = speed          # PID output clamp (max surge/sway), like the tester's max_output
         self.pos_tol = pos_tol
         self.timeout = timeout
+        # Position-PID gains for the ZED (closed-loop) drive — SAME control law as
+        # the pool pidtest so travel decelerates onto the target instead of
+        # constant-thrust-then-cut. Set these to the surge gains you tuned there.
+        self.kp, self.ki, self.kd = kp, ki, kd
+        self.surge_pid = None
+        self.sway_pid = None
+        self.last_time = None
         # If the next prop's class(es) appear while transiting, bail early and let
         # the task's vision take over — the preset distance/time is only a cap so
         # we don't overshoot when the prop is closer than measured. None = drive
@@ -163,11 +171,19 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
 
     def initialise(self):
+        from hightide_navigation import PIDController
         self.start_time = pytime.time()
+        self.last_time = self.start_time
         self.target = None
         self.dr_duration = None
         node = self.blackboard.get(bb.ROS_NODE)
         self._locked_heading = lock_heading(node)
+        # Fresh position PIDs each leg (output clamped to the speed cap), used by
+        # the ZED closed-loop branch.
+        self.surge_pid = PIDController(self.kp, self.ki, self.kd,
+                                       output_min=-self.speed, output_max=self.speed)
+        self.sway_pid = PIDController(self.kp, self.ki, self.kd,
+                                      output_min=-self.speed, output_max=self.speed)
 
         mag = math.hypot(self.forward_m, self.lateral_m)
         if mag < 1e-6:
@@ -264,15 +280,20 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
             node.get_logger().info(f'{self.name}: reached transit target')
             return py_trees.common.Status.SUCCESS
 
-        # World error → body frame (surge ahead, +sway right); heading FOG-held.
+        # World error → body-frame remaining distance (surge ahead, +sway right),
+        # then PID each axis on that distance — SAME law as the pool pidtest, so
+        # the drive ramps down onto the target instead of constant thrust. Heading
+        # held by the FOG.
+        now = pytime.time()
+        dt = now - self.last_time
+        self.last_time = now
         cos_y, sin_y = math.cos(yaw), math.sin(yaw)
-        surge = dx * cos_y + dy * sin_y
-        sway = -dx * sin_y + dy * cos_y
-        norm = max(dist, 1e-3)
+        e_surge = dx * cos_y + dy * sin_y
+        e_sway = -dx * sin_y + dy * cos_y
         cmd = ThrusterCommand()
         cmd.header.stamp = node.get_clock().now().to_msg()
-        cmd.surge = max(-self.speed, min(self.speed, self.speed * surge / norm))
-        cmd.sway = max(-self.speed, min(self.speed, self.speed * sway / norm))
+        cmd.surge = self.surge_pid.compute(e_surge, dt)
+        cmd.sway = self.sway_pid.compute(e_sway, dt)
         cmd.yaw = yaw_hold(node, self._locked_heading)
         node.cmd_pub.publish(cmd)
         return py_trees.common.Status.RUNNING

@@ -46,7 +46,7 @@ from hightide_interfaces.msg import (
 from hightide_mission.behaviors import blackboard_keys as bb
 from hightide_mission.behaviors.pre_dive import (
     ArmVehicle, SetAltHoldMode, SubmergeToDepth, WaitForStable)
-from hightide_mission.behaviors.gate import create_gate_subtree
+from hightide_mission.behaviors.gate import create_gate_subtree, HeadingTurn
 from hightide_mission.behaviors.slalom import create_slalom_subtree
 from hightide_mission.behaviors.bins import create_bins_subtree
 from hightide_mission.behaviors.torpedoes import create_torpedoes_subtree
@@ -104,14 +104,26 @@ class MissionNode(Node):
         # bin/octagon "advance N metres" legs). 'zed' = measure travel with ZED
         # odometry (accurate, closed-loop); 'dead_reckon' = open-loop timed drive
         # (distance / dead_reckon_mps) for when ZED odometry is down/unreliable.
+        # Opening maneuver, right after submerge: turn a set amount, then advance.
+        # initial_turn_deg = 0 skips the turn; initial_forward_m = 0 skips the
+        # advance. The forward move uses the movement_mode (ZED / dead-reckon).
+        self.declare_parameter('initial_turn_deg', 0.0)            # e.g. 90 / 180 / 270 (0 = none)
+        self.declare_parameter('initial_forward_m', 2.0)          # advance after the turn
+        self.declare_parameter('initial_turn_timeout_sec', 15.0)  # give 270° enough time
+
         self.declare_parameter('movement_mode', 'zed')             # 'zed' or 'dead_reckon'
         # transit_thrust = the POWER (normalized -1..1 cmd) the transit legs drive
         # at, in BOTH modes. dead_reckon_mps = the actual speed the vehicle moves
         # AT that thrust (measure it in-pool) — used only in dead_reckon mode to
         # turn each leg's distance into a drive TIME (time = distance / mps). The
         # two are coupled: re-measure mps whenever you change transit_thrust.
-        self.declare_parameter('transit_thrust', 0.35)             # drive power for transits
+        self.declare_parameter('transit_thrust', 0.35)             # drive power CAP for transits (PID clamp)
         self.declare_parameter('dead_reckon_mps', 0.4)             # measured speed (m/s) at transit_thrust
+        # Position-PID gains for ZED-mode transits/advance — SET THESE TO THE
+        # SURGE GAINS YOU TUNED IN THE POOL pidtest so mission moves match it.
+        self.declare_parameter('transit_kp', 0.2)
+        self.declare_parameter('transit_ki', 0.0)
+        self.declare_parameter('transit_kd', 0.05)
 
         self.declare_parameter('course', 'A')                      # 'A' or 'D'
         # Props are far apart, so between tasks we blind-drive a fixed body-frame
@@ -136,11 +148,19 @@ class MissionNode(Node):
         self.octagon_timeout = self.get_parameter('octagon_timeout_sec').value
         self.return_home_timeout = self.get_parameter('return_home_timeout_sec').value
 
+        # Opening maneuver
+        self.initial_turn_deg = float(self.get_parameter('initial_turn_deg').value)
+        self.initial_forward_m = float(self.get_parameter('initial_forward_m').value)
+        self.initial_turn_timeout = float(self.get_parameter('initial_turn_timeout_sec').value)
+
         # Movement mode → blackboard flag the nav behaviors read.
         mode = str(self.get_parameter('movement_mode').value).lower()
         self.use_odometry = (mode != 'dead_reckon')   # anything but dead_reckon = zed
         self.dead_reckon_mps = float(self.get_parameter('dead_reckon_mps').value)
         self.transit_thrust = float(self.get_parameter('transit_thrust').value)
+        self.transit_kp = float(self.get_parameter('transit_kp').value)
+        self.transit_ki = float(self.get_parameter('transit_ki').value)
+        self.transit_kd = float(self.get_parameter('transit_kd').value)
 
         # Selected course (A/D) — picks which transit distance set is used.
         self.course = str(self.get_parameter('course').value).upper()
@@ -261,23 +281,40 @@ class MissionNode(Node):
             f'Movement mode: {"ZED odometry" if self.use_odometry else "DEAD RECKON"}'
             + ('' if self.use_odometry else f' ({self.dead_reckon_mps} m/s)')
             + f' | Course: {self.course}')
+        self.get_logger().info(
+            'Opening maneuver: '
+            + (f'turn {self.initial_turn_deg:.0f}deg'
+               if abs(self.initial_turn_deg) > 0.01 else 'no turn')
+            + ' + '
+            + (f'advance {self.initial_forward_m:.1f}m'
+               if self.initial_forward_m > 0.01 else 'no advance'))
 
     def _build_tree(self) -> py_trees.trees.BehaviourTree:
         """Build the full competition behavior tree."""
 
-        # Pre-dive sequence
+        # Pre-dive sequence: arm, dive, stabilize, then the opening maneuver
+        # (turn a set amount + advance) before the tasks begin.
+        predive_children = [
+            LogBehavior('Mission_Start', '=== MISSION BEGINNING ==='),
+            ArmVehicle('Arm'),
+            SetAltHoldMode('SetAltHold'),
+            SubmergeToDepth('Submerge', depth_m=self.mission_depth),
+            WaitForStable('Stabilize'),
+        ]
+        if abs(self.initial_turn_deg) > 0.01:
+            predive_children.append(
+                HeadingTurn('InitialTurn', degrees=self.initial_turn_deg,
+                            tolerance=3.0, timeout=self.initial_turn_timeout))
+        if self.initial_forward_m > 0.01:
+            predive_children.append(
+                DeadReckonTransit('InitialAdvance', forward_m=self.initial_forward_m,
+                                  speed=self.transit_thrust,
+                                  kp=self.transit_kp, ki=self.transit_ki,
+                                  kd=self.transit_kd))
+        predive_children.append(
+            LogBehavior('PreDive_Complete', 'Pre-dive complete — starting tasks'))
         pre_dive = py_trees.composites.Sequence(
-            name='PreDive',
-            memory=True,
-            children=[
-                LogBehavior('Mission_Start', '=== MISSION BEGINNING ==='),
-                ArmVehicle('Arm'),
-                SetAltHoldMode('SetAltHold'),
-                SubmergeToDepth('Submerge', depth_m=self.mission_depth),
-                WaitForStable('Stabilize'),
-                LogBehavior('PreDive_Complete', 'Pre-dive complete — starting tasks'),
-            ],
-        )
+            name='PreDive', memory=True, children=predive_children)
 
         # Competition tasks in order. Each is wrapped so that a FAILURE (e.g. a
         # prop never detected) is converted to SUCCESS — the sequence then moves
@@ -305,7 +342,9 @@ class MissionNode(Node):
             lat = self.get_parameter(f'transit_{self.course}_{leg}_lateral_m').value
             return DeadReckonTransit(name, forward_m=fwd, lateral_m=lat,
                                      speed=self.transit_thrust,
-                                     target_classes=transit_targets.get(leg))
+                                     target_classes=transit_targets.get(leg),
+                                     kp=self.transit_kp, ki=self.transit_ki,
+                                     kd=self.transit_kd)
 
         tasks = py_trees.composites.Sequence(
             name='CompetitionTasks',

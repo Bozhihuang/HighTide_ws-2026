@@ -26,14 +26,27 @@ mission_node:
     octagon_settle_sec: 2.0
     octagon_surface_depth_m: 0.3
 
+    # ---- Opening maneuver (right after submerge, before the tasks) ----
+    # Turn a set amount, then advance. Uses the movement_mode below for the
+    # advance. Set initial_turn_deg to 0 to skip the turn, initial_forward_m to 0
+    # to skip the advance.
+    initial_turn_deg: 0.0            # degrees to rotate after submerge: 90 / 180 / 270 (0 = none)
+    initial_forward_m: 2.0           # metres to advance after the turn
+    initial_turn_timeout_sec: 15.0   # safety cap on the turn (270° needs more time than 90°)
+
     # ---- Movement mode: ZED odometry vs open-loop dead reckoning ----
     # 'zed'        = measure travel with ZED odometry (accurate, closed-loop).
     # 'dead_reckon'= open-loop timed drive (distance / dead_reckon_mps) — use if
     #                ZED odometry is down/unreliable in the pool.
     # Applies to the inter-mission transits and the bin/octagon "advance N m" legs.
     movement_mode: 'zed'              # 'zed' or 'dead_reckon'
-    transit_thrust: 0.35             # POWER (normalized cmd) the transits drive at (both modes)
+    transit_thrust: 0.35             # POWER cap (PID output clamp) for transits/advance
     dead_reckon_mps: 0.4             # measured speed (m/s) AT transit_thrust; sets time = dist/mps
+    # Position-PID gains for ZED-mode transits/advance. SET THESE TO THE SURGE
+    # GAINS YOU TUNED IN THE POOL pidtest so mission moves are as accurate as it.
+    transit_kp: 0.2
+    transit_ki: 0.0
+    transit_kd: 0.05
 
     # ---- Course + inter-mission dead-reckon transits ----
     # Courses A and D are DIFFERENT layouts. Fill in BOTH sets; `course` picks
