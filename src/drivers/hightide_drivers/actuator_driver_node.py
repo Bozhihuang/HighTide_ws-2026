@@ -104,33 +104,55 @@ class ActuatorDriverNode(Node):
             self.get_logger().error(f'MAVROS Rejected Command! Reason: {error_msg}')
             return False
 
+    def _pulse_relay(self, name: str, relay_pin: float, attempt: int, total: int) -> bool:
+        self.get_logger().info(
+            f'Actuating {name} (Relay {relay_pin}) for {self.pulse_ms}ms '
+            f'(pulse {attempt}/{total})')
+
+        success_on = self._set_relay(relay_pin, 1.0)
+        if not success_on:
+            self.get_logger().error(f'Failed to turn ON {name} (pulse {attempt})')
+            return False
+
+        pytime.sleep(self.pulse_ms / 1000.0)
+
+        success_off = self._set_relay(relay_pin, 0.0)
+        if not success_off:
+            self.get_logger().error(f'Failed to turn OFF {name} (pulse {attempt})')
+            return False
+
+        return True
+
     def _actuate_relay(self, name: str) -> bool:
+        """Retry-on-failure: pulse until the first success, up to fire_max_attempts."""
         relay_pin = self.relays.get(name)
         if relay_pin is None:
             return False
 
         for attempt in range(1, self.fire_max_attempts + 1):
-            self.get_logger().info(
-                f'Actuating {name} (Relay {relay_pin}) for {self.pulse_ms}ms '
-                f'(attempt {attempt}/{self.fire_max_attempts})')
-
-            success_on = self._set_relay(relay_pin, 1.0)
-            if not success_on:
-                self.get_logger().error(f'Failed to turn ON {name} (attempt {attempt})')
-                continue
-
-            pytime.sleep(self.pulse_ms / 1000.0)
-
-            success_off = self._set_relay(relay_pin, 0.0)
-            if not success_off:
-                self.get_logger().error(f'Failed to turn OFF {name} (attempt {attempt})')
-                continue
-
-            return True
+            if self._pulse_relay(name, relay_pin, attempt, self.fire_max_attempts):
+                return True
 
         self.get_logger().error(
             f'{name} failed after {self.fire_max_attempts} attempts')
         return False
+
+    def _actuate_torpedo_relay(self, name: str) -> bool:
+        """Torpedoes always pulse fire_max_attempts times in a row, regardless
+        of the outcome of earlier pulses (redundant firing, not retry-on-fail)."""
+        relay_pin = self.relays.get(name)
+        if relay_pin is None:
+            return False
+
+        any_success = False
+        for attempt in range(1, self.fire_max_attempts + 1):
+            if self._pulse_relay(name, relay_pin, attempt, self.fire_max_attempts):
+                any_success = True
+
+        if not any_success:
+            self.get_logger().error(
+                f'{name} failed on all {self.fire_max_attempts} pulses')
+        return any_success
 
     def _fire_torpedo(self, request, response):
         tube_id = request.tube_id
