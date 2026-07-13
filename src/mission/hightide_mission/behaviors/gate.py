@@ -253,8 +253,10 @@ class HeadingTurn(py_trees.behaviour.Behaviour):
 
         dt = now - self.last_t
         self.last_t = now
-        
-        yaw_cmd = self.pid.compute(error_rad, dt)
+
+        # Negate: IMU yaw (ENU) is CCW-positive but ArduSub's yaw channel is
+        # CW-positive — see yaw_hold() in common.py for the same fix.
+        yaw_cmd = -self.pid.compute(error_rad, dt)
 
         node = self.blackboard.get(bb.ROS_NODE)
         cmd = ThrusterCommand()

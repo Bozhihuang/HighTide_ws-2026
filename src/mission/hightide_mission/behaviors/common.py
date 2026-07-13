@@ -28,6 +28,12 @@ def yaw_hold(node, locked_heading, kp=1.5, limit=0.3):
     translating behavior feeds this into cmd.yaw to stay on its locked FOG/IMU
     heading. Returns 0.0 when heading is unknown so it degrades to "no yaw
     command" rather than spinning on bad data.
+
+    IMU yaw (ENU) is CCW-positive, but ThrusterCommand.yaw / ArduSub ch4 are
+    CW-positive (see waypoint_navigator_node's yaw_command_sign) — the raw PID
+    output must be negated or this becomes positive feedback: any drift off
+    locked_heading gets reinforced instead of corrected, so the vehicle spins
+    instead of holding straight while it surges.
     """
     if locked_heading is None:
         return 0.0
@@ -36,7 +42,7 @@ def yaw_hold(node, locked_heading, kp=1.5, limit=0.3):
         return 0.0
     from hightide_navigation import normalize_angle
     err = normalize_angle(locked_heading - current)
-    return max(-limit, min(limit, kp * err))
+    return max(-limit, min(limit, -kp * err))
 
 
 def read_use_odometry(blackboard, default=True):
