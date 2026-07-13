@@ -14,8 +14,8 @@ this file, breaking `create_slalom_subtree`'s import into mission_node.)
 
 import py_trees
 from .common import (WaitForDuration, LogBehavior, StopMotion,
-                     SearchForDetection, distribute_timeout,
-                     lock_heading, yaw_hold)
+                     SearchForDetection, DeadReckonTransit,
+                     distribute_timeout, lock_heading, yaw_hold)
 from . import blackboard_keys as bb
 
 
@@ -37,12 +37,15 @@ class SlalomPipe(py_trees.behaviour.Behaviour):
     """
 
     def __init__(self, name='SlalomPipe', pipe_number=1,
-                 approach_timeout=15.0, strafe_timeout=6.0, pass_duration=5.0):
+                 approach_timeout=15.0, strafe_timeout=6.0, pass_duration=5.0,
+                 approach_surge=0.25, strafe_trigger_m=2.0):
         super().__init__(name)
         self.pipe_number = pipe_number
         self.approach_timeout = approach_timeout
         self.strafe_timeout = strafe_timeout
         self.pass_duration = pass_duration
+        self.approach_surge = approach_surge
+        self.strafe_trigger_m = strafe_trigger_m
         self.phase = 'approach'
         self.phase_start = None
         self.strafe_duration = 0.0
@@ -100,8 +103,11 @@ class SlalomPipe(py_trees.behaviour.Behaviour):
             # Surge forward until we see a red pole close enough. The ffc model's
             # 'slalom' class IS the red poles (white pipes aren't a trained
             # class), which is exactly the divider we align relative to.
-            cmd.surge = 0.3
-            if red_pole and red_pole.depth_m > 0 and red_pole.depth_m < 1.5:
+            # Murky water: detection may only fire a couple of metres out, so the
+            # strafe trigger and surge leave room to react between first sight
+            # and the pole.
+            cmd.surge = self.approach_surge
+            if red_pole and 0 < red_pole.depth_m < self.strafe_trigger_m:
                 node.get_logger().info(
                     f'Pipe {self.pipe_number} at {red_pole.depth_m:.1f}m — strafing')
                 self._enter_phase('strafe')
@@ -168,13 +174,19 @@ class SlalomPipe(py_trees.behaviour.Behaviour):
         return py_trees.common.Status.RUNNING
 
 
-def create_slalom_subtree(total_timeout=240.0) -> py_trees.behaviour.Behaviour:
+def create_slalom_subtree(total_timeout=240.0,
+                          fallback_forward_m=5.0) -> py_trees.behaviour.Behaviour:
     """Build the Task 2 (Slalom) behavior subtree.
 
     total_timeout is this mission's time budget; it is split across the search
     and each pipe's approach/strafe deadlines (ratios preserve the old tuned
     5:5:2 : ... split). The pipes' fixed PASS_DURATION stays 5 s — it is an
     open-loop surge, not a failure deadline.
+
+    fallback_forward_m: if FindSlalom never sees a pole (murky water, detector
+    down), blind-drive this far straight through the slalom channel instead of
+    skipping the task — otherwise the sub is left BEFORE the slalom and every
+    later transit distance is wrong. Heading stays FOG-locked for the pass.
     """
     # Weights = the old hand-tuned defaults; distribute_timeout scales them to
     # sum to total_timeout while keeping their ratios.
@@ -186,15 +198,18 @@ def create_slalom_subtree(total_timeout=240.0) -> py_trees.behaviour.Behaviour:
     approach_to = t['p_approach'] / 3.0
     strafe_to = t['p_strafe'] / 3.0
 
-    return py_trees.composites.Sequence(
-        name='Task2_Slalom',
+    # No path_marker class in the ffc model — creep forward with a lateral
+    # sweep until the first red pole is seen (the slalom is NOT on a straight
+    # line from the gate, per the course rules). Confidence 0.4 matches the
+    # transit's early-bail threshold, so a pole solid enough to stop the
+    # transit is also solid enough to start the task (0.5 here made hazy
+    # 0.4-0.5 detections stop the transit and then stall the find).
+    slalom_run = py_trees.composites.Sequence(
+        name='SlalomRun',
         memory=True,
         children=[
-            LogBehavior('Slalom_Start', 'Starting Task 2: Slalom'),
-            # No path_marker class in the ffc model — creep forward with a
-            # lateral sweep until the first red pole is seen (the slalom is
-            # NOT on a straight line from the gate, per the course rules).
             SearchForDetection('FindSlalom', {'slalom'}, timeout=t['find'],
+                               confidence_threshold=0.4,
                                surge=0.2, sway_amplitude=0.2),
             WaitForDuration('ApproachSettle', duration_sec=2.0),
             SlalomPipe('SlalomPipe1', pipe_number=1,
@@ -203,6 +218,36 @@ def create_slalom_subtree(total_timeout=240.0) -> py_trees.behaviour.Behaviour:
                        approach_timeout=approach_to, strafe_timeout=strafe_to),
             SlalomPipe('SlalomPipe3', pipe_number=3,
                        approach_timeout=approach_to, strafe_timeout=strafe_to),
+        ],
+    )
+
+    # Fallback when the poles are never acquired: don't skip the slalom (that
+    # strands the sub on the near side), just drive straight through the whole
+    # thing. DeadReckonTransit holds the FOG heading and never fails, so this
+    # branch always completes. memory=True: once SlalomRun fails, stay on the
+    # blind pass instead of re-running the find every tick.
+    blind_pass = py_trees.composites.Sequence(
+        name='SlalomBlindPass',
+        memory=True,
+        children=[
+            LogBehavior('Slalom_Fallback',
+                        f'Slalom poles never acquired — blind forward '
+                        f'{fallback_forward_m:.1f}m through the course'),
+            DeadReckonTransit('SlalomBlindForward',
+                              forward_m=fallback_forward_m, speed=0.35),
+        ],
+    )
+
+    return py_trees.composites.Sequence(
+        name='Task2_Slalom',
+        memory=True,
+        children=[
+            LogBehavior('Slalom_Start', 'Starting Task 2: Slalom'),
+            py_trees.composites.Selector(
+                name='SlalomOrBlindPass',
+                memory=True,
+                children=[slalom_run, blind_pass],
+            ),
             StopMotion('StopAfterSlalom'),
             LogBehavior('Slalom_Done', 'Task 2 Slalom COMPLETE'),
         ],

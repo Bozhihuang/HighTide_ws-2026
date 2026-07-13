@@ -222,7 +222,7 @@ class HeadingTurn(py_trees.behaviour.Behaviour):
         # output_min defaults to -1.0, which made clockwise turns (negative
         # error, e.g. a 270° request that normalizes to -90°) spin at full
         # rate while counterclockwise ones were capped at 0.6.
-        self.pid = PIDController(kp=1.5, ki=0.05, kd=0.1,
+        self.pid = PIDController(kp=0.225, ki=0.0, kd=0.2,
                                  output_min=-0.6, output_max=0.6)
         
         current_heading = self.blackboard.get(bb.CURRENT_HEADING)

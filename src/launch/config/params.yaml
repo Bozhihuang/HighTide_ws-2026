@@ -16,6 +16,10 @@ mission_node:
     octagon_timeout_sec: 240.0
     return_home_timeout_sec: 240.0
 
+    # Slalom (Task 2): if the poles are never visually acquired (fog/murk),
+    # blind-drive this far straight through the slalom instead of skipping it.
+    slalom_fallback_forward_m: 5.0
+
     # Octagon (Task 5) knobs — tune in-water without code edits.
     octagon_advance_distance_m: 3.0   # blind odom advance if no visual cue
     octagon_surge: 0.3

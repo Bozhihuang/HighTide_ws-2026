@@ -85,6 +85,11 @@ class MissionNode(Node):
         self.declare_parameter('octagon_timeout_sec', 240.0)
         self.declare_parameter('return_home_timeout_sec', 240.0)
 
+        # Slalom (Task 2): if the poles are never visually acquired, blind-drive
+        # this far straight through the slalom instead of skipping it (skipping
+        # strands the sub on the near side and wrecks later transit distances).
+        self.declare_parameter('slalom_fallback_forward_m', 5.0)
+
         # Octagon (Task 5) tuning knobs — surfaced so they can be tuned in-water
         # via `ros2 param set` without editing code.
         self.declare_parameter('octagon_advance_distance_m', 3.0)  # blind odom advance
@@ -156,6 +161,8 @@ class MissionNode(Node):
         # Per-mission budgets
         self.gate_timeout = self.get_parameter('gate_timeout_sec').value
         self.slalom_timeout = self.get_parameter('slalom_timeout_sec').value
+        self.slalom_fallback_forward_m = float(
+            self.get_parameter('slalom_fallback_forward_m').value)
         self.bins_timeout = self.get_parameter('bins_timeout_sec').value
         self.torpedoes_timeout = self.get_parameter('torpedoes_timeout_sec').value
         self.octagon_timeout = self.get_parameter('octagon_timeout_sec').value
@@ -387,7 +394,9 @@ class MissionNode(Node):
             children=[
                 resilient(create_gate_subtree(total_timeout=self.gate_timeout)),
                 transit('Transit_Slalom', 'to_slalom'),
-                resilient(create_slalom_subtree(total_timeout=self.slalom_timeout)),
+                resilient(create_slalom_subtree(
+                    total_timeout=self.slalom_timeout,
+                    fallback_forward_m=self.slalom_fallback_forward_m)),
                 transit('Transit_Bins', 'to_bins'),
                 resilient(create_bins_subtree(total_timeout=self.bins_timeout)),
                 transit('Transit_Torpedoes', 'to_torpedoes'),
