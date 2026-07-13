@@ -152,8 +152,8 @@ class WaitForStable(py_trees.behaviour.Behaviour):
     best-effort on timeout so missing odometry can't stall pre-dive forever
     (the mission timeout would otherwise be the only way out)."""
 
-    def __init__(self, name='WaitForStable', velocity_threshold=0.1,
-                 timeout=20.0):
+    def __init__(self, name='WaitForStable', velocity_threshold=0.5,
+                 timeout=5.0):
         super().__init__(name)
         self.vel_thresh = velocity_threshold
         self.timeout = timeout

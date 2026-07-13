@@ -253,8 +253,10 @@ class HeadingTurn(py_trees.behaviour.Behaviour):
 
         dt = now - self.last_t
         self.last_t = now
-        
-        yaw_cmd = self.pid.compute(error_rad, dt)
+
+        # Negate: IMU yaw (ENU) is CCW-positive but ArduSub's yaw channel is
+        # CW-positive — see yaw_hold() in common.py for the same fix.
+        yaw_cmd = -self.pid.compute(error_rad, dt)
 
         node = self.blackboard.get(bb.ROS_NODE)
         cmd = ThrusterCommand()
@@ -304,10 +306,10 @@ def create_gate_subtree(total_timeout=240.0) -> py_trees.behaviour.Behaviour:
         children=[
             LogBehavior('Gate_Start', 'Starting Task 1: Gate'),
             find_gate_logic,
-            SurgeThrough('ApproachGate', duration=3.0, speed=0.3),
+            SurgeThrough('ApproachGate', duration=3.0, speed=0.7),
             ConfirmGateRole('ConfirmRole', timeout=t['confirm']),
             AlignWithGateHalf('AlignGate', timeout=t['align']),
-            SurgeThrough('PassThrough', duration=5.0, speed=0.5),
+            SurgeThrough('PassThrough', duration=5.0, speed=0.7),
             StopMotion('StopAfterGate'),
             # Remember the pose just PAST the gate (odometry) so Return Home
             # can dead-reckon back to the far side of the gate and cross it
