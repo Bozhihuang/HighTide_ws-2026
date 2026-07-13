@@ -39,7 +39,7 @@ mission_node:
     # turn always goes the SHORT way to the final heading, so 270 executes as
     # a 90° counterclockwise turn (same end heading).
     # Set per run to 90 / 180 / 270 depending on start-dock orientation; 0 = none.
-    initial_turn_deg: 90.0           # degrees to rotate after submerge: 90 / 180 / 270 (0 = none)
+    initial_turn_deg: 0.0            # degrees to rotate after submerge: 90 / 180 / 270 (0 = none; sub stays pointed forward at start)
     initial_forward_m: 2.0           # metres to advance after the turn
     initial_turn_timeout_sec: 15.0   # safety cap on the turn (270° needs more time than 90°)
 
