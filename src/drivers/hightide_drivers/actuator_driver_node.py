@@ -163,7 +163,7 @@ class ActuatorDriverNode(Node):
             return response
 
         pin_name = f'torpedo_{tube_id}'
-        success = self._actuate_relay(pin_name)
+        success = self._actuate_torpedo_relay(pin_name)
         
         if success:
             self.torpedoes_fired[tube_id] = True
