@@ -218,8 +218,12 @@ class HeadingTurn(py_trees.behaviour.Behaviour):
         from hightide_navigation import normalize_angle, PIDController
         self.start_time = time.time()
         
-        # We need a local PID controller for this maneuver
-        self.pid = PIDController(kp=1.5, ki=0.05, kd=0.1, output_max=0.6)
+        # We need a local PID controller for this maneuver. Clamp BOTH sides —
+        # output_min defaults to -1.0, which made clockwise turns (negative
+        # error, e.g. a 270° request that normalizes to -90°) spin at full
+        # rate while counterclockwise ones were capped at 0.6.
+        self.pid = PIDController(kp=1.5, ki=0.05, kd=0.1,
+                                 output_min=-0.6, output_max=0.6)
         
         current_heading = self.blackboard.get(bb.CURRENT_HEADING)
         if current_heading is None:
@@ -238,18 +242,27 @@ class HeadingTurn(py_trees.behaviour.Behaviour):
         from hightide_navigation import normalize_angle
         from hightide_interfaces.msg import ThrusterCommand
         
+        node = self.blackboard.get(bb.ROS_NODE)
         now = time.time()
         if (now - self.start_time) > self.timeout:
+            # stop-on-exit: don't leave the last yaw command spinning the sub
+            node.cmd_pub.publish(ThrusterCommand())
+            node.get_logger().warn(
+                f'{self.name}: turn timed out — proceeding at current heading')
             return py_trees.common.Status.SUCCESS
-            
+
         current_heading = self.blackboard.get(bb.CURRENT_HEADING)
         if current_heading is None:
             return py_trees.common.Status.RUNNING
 
         error_rad = normalize_angle(self.target_heading - current_heading)
-        
+
         if abs(math.degrees(error_rad)) <= self.tolerance_deg:
-            # We have reached the heading
+            # We have reached the heading — stop-on-exit so we don't coast past
+            node.cmd_pub.publish(ThrusterCommand())
+            node.get_logger().info(
+                f'{self.name}: reached target heading '
+                f'({math.degrees(self.target_heading):.1f}°)')
             return py_trees.common.Status.SUCCESS
 
         dt = now - self.last_t
@@ -259,7 +272,6 @@ class HeadingTurn(py_trees.behaviour.Behaviour):
         # CW-positive — see yaw_hold() in common.py for the same fix.
         yaw_cmd = -self.pid.compute(error_rad, dt)
 
-        node = self.blackboard.get(bb.ROS_NODE)
         cmd = ThrusterCommand()
         cmd.header.stamp = node.get_clock().now().to_msg()
         cmd.yaw = yaw_cmd

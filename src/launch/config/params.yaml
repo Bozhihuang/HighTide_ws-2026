@@ -30,7 +30,11 @@ mission_node:
     # Turn a set amount, then advance. Uses the movement_mode below for the
     # advance. Set initial_turn_deg to 0 to skip the turn, initial_forward_m to 0
     # to skip the advance.
-    initial_turn_deg: 0.0            # degrees to rotate after submerge: 90 / 180 / 270 (0 = none)
+    # Turn is RELATIVE to the heading at submerge. Positive = counterclockwise
+    # (left, ENU convention); the turn always goes the SHORT way to the final
+    # heading, so 270 executes as a 90° clockwise turn (same end heading).
+    # Set per run to 90 / 180 / 270 depending on start-dock orientation; 0 = none.
+    initial_turn_deg: 90.0           # degrees to rotate after submerge: 90 / 180 / 270 (0 = none)
     initial_forward_m: 2.0           # metres to advance after the turn
     initial_turn_timeout_sec: 15.0   # safety cap on the turn (270° needs more time than 90°)
 
