@@ -56,7 +56,7 @@ mission_node:
     # Quick isolation test: set yaw_hold_kp to 0.0 to disable heading
     # correction entirely — if the sub STILL crabs, the problem is hardware
     # (thruster trim/direction), not the yaw correction.
-    yaw_hold_kp: 0.45
+    yaw_hold_kp: 0.225
     yaw_hold_kd: 0.2
     yaw_hold_limit: 1.0        # pidtest's companion is unclamped (±1) — lower only if a glitch ever spins the sub
     yaw_hold_sign: -1.0
