@@ -63,14 +63,25 @@ class AlignTorpedo(py_trees.behaviour.Behaviour):
         node = self.blackboard.get(bb.ROS_NODE)
 
         if (time.time() - self.start_time) > self.timeout:
+            node.cmd_pub.publish(ThrusterCommand())   # stop-on-exit
             return py_trees.common.Status.SUCCESS  # Best effort
+
+        # When we can't servo this tick (no detections / no hole in view), still
+        # publish a heading-hold so cmd_vel stays fresh (no 0.5s neutralize) and
+        # the FOG heading is held instead of drifting.
+        def _hold():
+            h = ThrusterCommand()
+            h.header.stamp = node.get_clock().now().to_msg()
+            h.yaw = yaw_hold(node, self._locked_heading)
+            node.cmd_pub.publish(h)
 
         try:
             detections = self.blackboard.get(bb.DETECTIONS)
         except KeyError:
-            return py_trees.common.Status.RUNNING
+            detections = None
 
         if detections is None:
+            _hold()
             return py_trees.common.Status.RUNNING
 
         img_w = detections.image_width or 1280
@@ -87,6 +98,7 @@ class AlignTorpedo(py_trees.behaviour.Behaviour):
                     circles.append(det)
 
         if not circles:
+            _hold()
             return py_trees.common.Status.RUNNING
 
         if self.prefer == 'large':
@@ -214,12 +226,16 @@ class ApproachBoard(py_trees.behaviour.Behaviour):
         node = self.blackboard.get(bb.ROS_NODE)
 
         if (time.time() - self.start_time) > self.timeout:
+            node.cmd_pub.publish(ThrusterCommand())   # stop-on-exit
             return py_trees.common.Status.SUCCESS
 
+        # KeyError → treat as "no detections yet" and fall through to the
+        # creep-forward path below (which publishes), rather than returning
+        # RUNNING with no command and stalling the approach.
         try:
             detections = self.blackboard.get(bb.DETECTIONS)
         except KeyError:
-            return py_trees.common.Status.RUNNING
+            detections = None
 
         # The board is recognized by the role symbol printed on it. Only accept
         # symbols in the upper/middle of frame — the bins carry the same

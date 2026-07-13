@@ -184,10 +184,11 @@ class SurgeThrough(py_trees.behaviour.Behaviour):
     def update(self):
         import time
         from hightide_interfaces.msg import ThrusterCommand
+        node = self.blackboard.get(bb.ROS_NODE)
         if (time.time() - self.start_time) > self.duration:
+            node.cmd_pub.publish(ThrusterCommand())   # stop-on-exit: don't coast
             return py_trees.common.Status.SUCCESS
 
-        node = self.blackboard.get(bb.ROS_NODE)
         cmd = ThrusterCommand()
         cmd.header.stamp = node.get_clock().now().to_msg()
         cmd.surge = self.speed

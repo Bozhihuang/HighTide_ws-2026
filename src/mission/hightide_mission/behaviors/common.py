@@ -275,7 +275,8 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
         except KeyError:
             current = yaw = None
         if current is None or yaw is None:
-            return py_trees.common.Status.SUCCESS  # lost odom mid-leg — best effort
+            node.cmd_pub.publish(ThrusterCommand())   # lost odom mid-leg — stop, best effort
+            return py_trees.common.Status.SUCCESS
 
         pos = current.pose.pose.position
         dx = self.target[0] - pos.x

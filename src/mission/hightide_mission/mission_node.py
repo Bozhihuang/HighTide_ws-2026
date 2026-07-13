@@ -417,8 +417,36 @@ class MissionNode(Node):
             # timeout above bounds how long this can go on.
             self.get_logger().warn('Mission tree FAILED (pre-dive) — retrying')
 
+        self._log_health()
+
         # Publish mission state
         self._publish_mission_state()
+
+    def _log_health(self):
+        """Throttled warnings when a motion-critical input is missing, so a
+        'the sub just sits there' is diagnosable straight from the mission log.
+        None of these block motion by themselves — they explain WHY a behavior
+        might not be commanding surge/sway/yaw."""
+        now = pytime.time()
+        if now - getattr(self, '_last_health_log', 0.0) < 3.0:
+            return
+        self._last_health_log = now
+        issues = []
+        if self.current_heading is None:
+            issues.append('no IMU heading (yaw-hold + turns disabled)')
+        try:
+            if self.blackboard.get(bb.CURRENT_POSE) is None:
+                issues.append('no ZED odometry (ZED-mode moves fall back to timed)')
+        except KeyError:
+            issues.append('no ZED odometry (ZED-mode moves fall back to timed)')
+        try:
+            det = self.blackboard.get(bb.DETECTIONS)
+            if det is None or len(det.detections) == 0:
+                issues.append('no detections (vision behaviors blind)')
+        except KeyError:
+            issues.append('no detections (vision behaviors blind)')
+        if issues:
+            self.get_logger().warn('HEALTH: ' + '; '.join(issues))
 
     # ==================== Safe shutdown (complete / timeout) ====================
 

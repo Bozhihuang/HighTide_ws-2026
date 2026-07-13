@@ -14,7 +14,8 @@ this file, breaking `create_slalom_subtree`'s import into mission_node.)
 
 import py_trees
 from .common import (WaitForDuration, LogBehavior, StopMotion,
-                     SearchForDetection, distribute_timeout)
+                     SearchForDetection, distribute_timeout,
+                     lock_heading, yaw_hold)
 from . import blackboard_keys as bb
 
 
@@ -45,6 +46,7 @@ class SlalomPipe(py_trees.behaviour.Behaviour):
         self.phase = 'approach'
         self.phase_start = None
         self.strafe_duration = 0.0
+        self._locked_heading = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.GATE_DIVIDER_SIDE, access=py_trees.common.Access.READ)
@@ -63,6 +65,10 @@ class SlalomPipe(py_trees.behaviour.Behaviour):
         self.phase = 'approach'
         self.phase_start = time.time()
         self.strafe_duration = 0.0
+        # Lock the FOG heading so we hold it while strafing past the pipes — the
+        # whole strategy is "strafe, don't turn", which only holds if we actively
+        # suppress yaw drift.
+        self._locked_heading = lock_heading(self.blackboard.get(bb.ROS_NODE))
 
     def _enter_phase(self, phase):
         import time
@@ -75,6 +81,7 @@ class SlalomPipe(py_trees.behaviour.Behaviour):
         node = self.blackboard.get(bb.ROS_NODE)
         cmd = ThrusterCommand()
         cmd.header.stamp = node.get_clock().now().to_msg()
+        cmd.yaw = yaw_hold(node, self._locked_heading)  # hold heading through all phases
         phase_elapsed = time.time() - self.phase_start
 
         try:
