@@ -40,7 +40,7 @@ mission_node:
     # which one runs. Blind-drive a body-frame (forward, lateral) offset on ZED
     # odometry between tasks, THEN the next task visually acquires. Metres;
     # lateral +right. 0.0 = disabled (creep-and-search). >>> MEASURE IN POOL. <<<
-    course: 'A'                       # 'A' or 'D'
+    course: 'D'                       # 'A' or 'D'
 
     # --- Course A distances ---
     transit_A_to_slalom_forward_m: 0.0
@@ -53,12 +53,12 @@ mission_node:
     transit_A_to_octagon_lateral_m: 0.0
 
     # --- Course D distances ---
-    transit_D_to_slalom_forward_m: 2.5
-    transit_D_to_slalom_lateral_m: -2.0
-    transit_D_to_bins_forward_m: 1.0
-    transit_D_to_bins_lateral_m: 3.0
-    transit_D_to_torpedoes_forward_m: 3.0
-    transit_D_to_torpedoes_lateral_m: 1.0
+    transit_D_to_slalom_forward_m: 1.0
+    transit_D_to_slalom_lateral_m: 0.0
+    transit_D_to_bins_forward_m: 0.5
+    transit_D_to_bins_lateral_m: 2.5
+    transit_D_to_torpedoes_forward_m: 1.5
+    transit_D_to_torpedoes_lateral_m: -6.0
     transit_D_to_octagon_forward_m: 0.0
     transit_D_to_octagon_lateral_m: 0.0
 
@@ -78,7 +78,7 @@ depth_controller_node:
     ki: 35.0
     kd: 0.0
     max_output: 400
-    depth_tolerance: 0.1          # meters
+    depth_tolerance: 0.5          # meters
     integral_max: 100.0
 
 mode_manager_node:
