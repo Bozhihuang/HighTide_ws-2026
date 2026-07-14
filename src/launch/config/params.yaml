@@ -29,15 +29,15 @@ mission_node:
     # this same vehicle to a target heading with no concurrent surge, so they use
     # one tuned gain set. yaw_controller_node (a separate node/process) has its
     # own identical-by-default yaw_kp/ki/kd/yaw_output_limit — keep both in sync.
-    heading_turn_kp: 0.18
-    heading_turn_ki: 0.012
+    heading_turn_kp: 0.2
+    heading_turn_ki: 0.013
     heading_turn_kd: 0.0
     heading_turn_output_limit: 0.6
 
     # ---- Gate approach / pass-through (closed-loop ZED/PID forward legs) ----
     # Find gate -> drive forward gate_approach_forward_m -> strafe to center the
     # role symbol -> drive forward gate_passthrough_forward_m through the gate.
-    gate_approach_forward_m: 1.5
+    gate_approach_forward_m: 1.7
     gate_passthrough_forward_m: 1.5
     # While centering on the role symbol, if it isn't visible yet, strafe this
     # direction ('left'/'right') until it comes into frame. Both the search and
@@ -45,12 +45,12 @@ mission_node:
     gate_align_search_side: 'right'
     gate_align_search_speed: 0.15
     gate_align_strafe_max: 0.15
-    gate_style_spin_enabled: true     # do the 2x 360° style spin after the gate
+    gate_style_spin_enabled: false     # do the 2x 360° style spin after the gate
     # Fixed deadlines (NOT scaled by any mission budget). If ConfirmRole never
     # sees the role symbol, or AlignGate never centers on it, within these,
     # each gives up best-effort and the gate task proceeds anyway.
     gate_confirm_timeout_sec: 15.0
-    gate_align_timeout_sec: 5.0
+    gate_align_timeout_sec: 10.0
 
     # After the gate + 2x style spin, dive this much DEEPER for the dead-reckon
     # slalom legs and everything after.
@@ -68,7 +68,7 @@ mission_node:
     # return_home_heading_offset_deg — 180° faces back toward the gate), then
     # drive straight return_home_forward_m holding that heading. Turn uses the
     # heading_turn_* PID; the drive uses the transit_* PID + heading hold.
-    return_home_depth_m: 0.5
+    return_home_depth_m: 0.7
     return_home_forward_m: 6.0
     return_home_heading_offset_deg: 180.0
 
@@ -80,8 +80,8 @@ mission_node:
     octagon_advance_distance_m: 3.0   # ZED/PID advance into the octagon interior
     octagon_surge: 0.3
     octagon_settle_sec: 2.0
-    octagon_surface_depth_m: 0.3
-    octagon_face_yaw_rate: 0.08       # slow scan rate while searching for an icon
+    octagon_surface_depth_m: 0.4
+    octagon_face_yaw_rate: 0.2       # slow scan rate while searching for an icon
     octagon_face_turn_gain: 1.5       # fine-tune proportional gain once one's in view
     octagon_face_turn_max: 0.2        # fine-tune yaw cap
     octagon_face_center_tol: 0.1      # normalized frame-center tolerance to call it "facing"
@@ -169,9 +169,9 @@ mission_node:
     slalom_A_forward2_m: 0.0
     # --- Course D ---
     slalom_D_turn1_deg: 30.0     # e.g. turn 30deg clockwise off the gate exit
-    slalom_D_forward1_m: 2.0     # ...then drive 2m holding that heading
+    slalom_D_forward1_m: 1.5     # ...then drive 2m holding that heading
     slalom_D_turn2_deg: -60.0    # then turn 60deg CCW (relative, weaves back)
-    slalom_D_forward2_m: 2.0     # ...then drive 2m holding that heading
+    slalom_D_forward2_m: 1.5     # ...then drive 2m holding that heading
     # (final leg PID-yaws back to the pre-turn heading — no param needed)
 
     # ---- Dead-reckon leg: slalom exit -> torpedo board ----
