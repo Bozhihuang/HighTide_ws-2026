@@ -44,6 +44,11 @@ mission_node:
     gate_align_search_side: 'right'
     gate_align_search_speed: 0.15
     gate_align_strafe_max: 0.15
+    # Fixed deadlines (NOT scaled by any mission budget). If ConfirmRole never
+    # sees the role symbol, or AlignGate never centers on it, within these,
+    # each gives up best-effort and the gate task proceeds anyway.
+    gate_confirm_timeout_sec: 15.0
+    gate_align_timeout_sec: 30.0
 
     # After the gate + 2x style spin, dive this much DEEPER for the dead-reckon
     # slalom legs and everything after.
@@ -52,7 +57,6 @@ mission_node:
     # Per-mission time budgets (s). Each subtree splits its budget across its own
     # timeout-bearing behaviors, preserving tuned ratios. Sum can exceed
     # mission_timeout_sec — the global cap wins, later tasks get squeezed.
-    gate_timeout_sec: 240.0
     torpedoes_timeout_sec: 240.0
     octagon_timeout_sec: 240.0
     return_home_timeout_sec: 240.0

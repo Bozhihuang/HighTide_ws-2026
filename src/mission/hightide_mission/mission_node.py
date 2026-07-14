@@ -109,7 +109,6 @@ class MissionNode(Node):
         # mission_timeout_sec (900 s) — the global cap wins, so later tasks are
         # squeezed if earlier ones run long. Fixed open-loop motions (surge/pass/
         # settle) are NOT part of these budgets and never scale.
-        self.declare_parameter('gate_timeout_sec', 240.0)
         self.declare_parameter('torpedoes_timeout_sec', 240.0)
         self.declare_parameter('octagon_timeout_sec', 240.0)
         self.declare_parameter('return_home_timeout_sec', 240.0)
@@ -119,6 +118,12 @@ class MissionNode(Node):
         # the role symbol, THEN drive forward this far through the gate.
         self.declare_parameter('gate_approach_forward_m', 1.5)
         self.declare_parameter('gate_passthrough_forward_m', 2.5)
+        # Fixed deadlines (NOT scaled by any mission budget). If ConfirmRole
+        # never sees the role symbol within gate_confirm_timeout_sec, or
+        # AlignGate never centers on it within gate_align_timeout_sec, each
+        # gives up best-effort and the gate task proceeds anyway.
+        self.declare_parameter('gate_confirm_timeout_sec', 15.0)
+        self.declare_parameter('gate_align_timeout_sec', 30.0)
         # While centering, if the role symbol isn't visible yet, strafe this
         # direction ('left'/'right') until it comes into frame. Both the
         # search and the centering strafe use the same slow speed cap — the
@@ -232,10 +237,11 @@ class MissionNode(Node):
         self.gate_align_search_side = str(self.get_parameter('gate_align_search_side').value)
         self.gate_align_search_speed = float(self.get_parameter('gate_align_search_speed').value)
         self.gate_align_strafe_max = float(self.get_parameter('gate_align_strafe_max').value)
+        self.gate_confirm_timeout = float(self.get_parameter('gate_confirm_timeout_sec').value)
+        self.gate_align_timeout = float(self.get_parameter('gate_align_timeout_sec').value)
         self.slalom_extra_depth_m = float(self.get_parameter('slalom_extra_depth_m').value)
 
         # Per-mission budgets
-        self.gate_timeout = self.get_parameter('gate_timeout_sec').value
         self.torpedoes_timeout = self.get_parameter('torpedoes_timeout_sec').value
         self.octagon_timeout = self.get_parameter('octagon_timeout_sec').value
         self.return_home_timeout = self.get_parameter('return_home_timeout_sec').value
@@ -495,7 +501,8 @@ class MissionNode(Node):
         task_children = []
         if self.run_gate:
             task_children.append(resilient(create_gate_subtree(
-                total_timeout=self.gate_timeout,
+                confirm_timeout=self.gate_confirm_timeout,
+                align_timeout=self.gate_align_timeout,
                 approach_forward_m=self.gate_approach_forward_m,
                 passthrough_forward_m=self.gate_passthrough_forward_m,
                 transit_speed=self.transit_thrust,

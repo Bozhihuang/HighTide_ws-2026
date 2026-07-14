@@ -11,7 +11,7 @@ was on, surge through, then a heading-safe 2x 360° yaw spin for style points.
 
 import py_trees
 from .common import (CallTriggerService, LogBehavior, StopMotion, RecordPose,
-                     DeadReckonTransit, lock_heading, yaw_hold, distribute_timeout)
+                     DeadReckonTransit, lock_heading, yaw_hold)
 from . import blackboard_keys as bb
 
 
@@ -93,7 +93,10 @@ class AlignWithGateHalf(py_trees.behaviour.Behaviour):
     expected to be) instead of creeping forward, until either the symbol
     comes into frame (then it centers normally) or the timeout hits.
     Records which half the role symbol sits on into GATE_DIVIDER_SIDE (kept
-    for downstream logic). Succeeds once centered, or best-effort on timeout.
+    for downstream logic). Succeeds once centered; on timeout it FAILS —
+    Task1_Gate is a Sequence, so a failed align abandons the rest of the gate
+    task (no PassThrough, no style spin) and the mission's outer
+    FailureIsSuccess wrapper moves straight on to the next task instead.
     """
 
     def __init__(self, name='AlignWithGateHalf', timeout=20.0, center_tol=0.12,
@@ -136,9 +139,10 @@ class AlignWithGateHalf(py_trees.behaviour.Behaviour):
         elapsed = time.time() - self.start_time
 
         if elapsed > self.timeout:
-            node.get_logger().warn('Gate align timed out — proceeding best-effort')
+            node.get_logger().warn(
+                'Gate align timed out — abandoning gate task, moving on')
             node.cmd_pub.publish(ThrusterCommand())
-            return py_trees.common.Status.SUCCESS
+            return py_trees.common.Status.FAILURE
 
         try:
             detections = self.blackboard.get(bb.DETECTIONS)
@@ -313,7 +317,7 @@ class HeadingTurn(py_trees.behaviour.Behaviour):
         return py_trees.common.Status.RUNNING
 
 
-def create_gate_subtree(total_timeout=240.0,
+def create_gate_subtree(confirm_timeout=15.0, align_timeout=30.0,
                         approach_forward_m=1.5, passthrough_forward_m=2.5,
                         transit_speed=0.6, transit_kp=0.2, transit_ki=0.0,
                         transit_kd=0.05, align_search_side='right',
@@ -326,14 +330,12 @@ def create_gate_subtree(total_timeout=240.0,
     centered → drive forward `passthrough_forward_m` through the gate →
     record pose → 2x style yaw spin.
 
-    total_timeout is this mission's time budget, split across the role-confirm
-    and align deadlines (ratio preserved from the old tuning). The
-    approach/pass-through forward distances are closed-loop ZED-odometry legs
-    (same PID transit as the inter-task legs) and are NOT scaled by the time
-    budget.
+    confirm_timeout/align_timeout are fixed deadlines (NOT scaled against a
+    total mission budget) — if AlignGate hasn't centered on the symbol within
+    align_timeout (30s default), it gives up best-effort and proceeds straight
+    to PassThrough anyway. The approach/pass-through forward distances are
+    closed-loop ZED-odometry legs (same PID transit as the inter-task legs).
     """
-    t = distribute_timeout(total_timeout, {'confirm': 15.0, 'align': 20.0})
-
     return py_trees.composites.Sequence(
         name='Task1_Gate',
         memory=True,
@@ -344,8 +346,8 @@ def create_gate_subtree(total_timeout=240.0,
             DeadReckonTransit('ApproachGate', forward_m=approach_forward_m,
                               speed=transit_speed, kp=transit_kp, ki=transit_ki,
                               kd=transit_kd),
-            ConfirmGateRole('ConfirmRole', timeout=t['confirm']),
-            AlignWithGateHalf('AlignGate', timeout=t['align'],
+            ConfirmGateRole('ConfirmRole', timeout=confirm_timeout),
+            AlignWithGateHalf('AlignGate', timeout=align_timeout,
                               search_side=align_search_side,
                               search_speed=align_search_speed,
                               strafe_max=align_strafe_max),
