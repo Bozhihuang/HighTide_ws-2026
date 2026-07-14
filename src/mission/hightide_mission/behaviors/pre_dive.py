@@ -17,21 +17,28 @@ class RecordInitialHeading(py_trees.behaviour.Behaviour):
     Snapshot the FOG/IMU heading at mission start — this points at the gate —
     into bb.INITIAL_HEADING. The crew then physically repositions the sub
     during the coin-flip countdown; YawToRecordedHeading later drives back to
-    this heading. Waits (RUNNING) up to `timeout` for the first heading to
-    arrive, then best-effort SUCCEEDS (records None so the yaw-back is skipped
-    rather than driving to a bogus 0.0).
+    this heading.
+
+    Blocks (RUNNING) until real IMU heading data arrives — it does NOT give up
+    on a timeout. Arming can't succeed before MAVROS/IMU is actually live
+    anyway, so there's no time pressure here; giving up early used to record
+    None permanently for that PreDive attempt, silently disabling the
+    yaw-back later (the sub would end pre-dive at whatever heading the
+    coin-flip left it at, with no correction — looks like "it never turns
+    back to the original heading").
     """
 
-    def __init__(self, name='RecordInitialHeading', timeout=10.0):
+    def __init__(self, name='RecordInitialHeading'):
         super().__init__(name)
-        self.timeout = timeout
         self.start_time = None
+        self.last_logged = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.INITIAL_HEADING, access=py_trees.common.Access.WRITE)
 
     def initialise(self):
         self.start_time = pytime.time()
+        self.last_logged = None
 
     def update(self):
         node = self.blackboard.get(bb.ROS_NODE)
@@ -41,11 +48,14 @@ class RecordInitialHeading(py_trees.behaviour.Behaviour):
             node.get_logger().info(
                 f'Recorded initial (gate-facing) heading: {math.degrees(heading):.1f}°')
             return py_trees.common.Status.SUCCESS
-        if (pytime.time() - self.start_time) > self.timeout:
+
+        elapsed = pytime.time() - self.start_time
+        sec = int(elapsed)
+        if sec != self.last_logged and sec % 5 == 0:
+            self.last_logged = sec
             node.get_logger().warn(
-                'No IMU heading at start — coin-flip yaw-back will be skipped')
-            self.blackboard.set(bb.INITIAL_HEADING, None)
-            return py_trees.common.Status.SUCCESS
+                f'Still no IMU heading after {sec}s — waiting '
+                '(check MAVROS/FCU connection)')
         return py_trees.common.Status.RUNNING
 
 
