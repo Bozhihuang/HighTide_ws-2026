@@ -14,9 +14,8 @@ best-effort skips and the drive just goes straight ahead on the current heading.
 """
 
 import py_trees
-from .common import (LogBehavior, StopMotion, PublishDepthSetpoint,
-                     WaitForDuration, DeadReckonTransit)
-from .pre_dive import YawToRecordedHeading
+from .common import LogBehavior, StopMotion, WaitForDuration, DeadReckonTransit
+from .pre_dive import SubmergeToDepth, YawToRecordedHeading
 from . import blackboard_keys as bb
 
 
@@ -40,8 +39,10 @@ def create_return_home_subtree(depth_m=0.5, forward_m=4.0,
         memory=True,
         children=[
             LogBehavior('ReturnHome_Start', 'Starting Task 6: Return Home'),
-            # 1. Dive back down (we surfaced in the octagon) and let it settle.
-            PublishDepthSetpoint('SubmergeForReturn', depth_m=depth_m),
+            # 1. Dive back down (we surfaced in the octagon) — actually WAIT
+            # until depth_m is reached (not just publish-and-move-on), so the
+            # turn/drive below start from the correct depth, not mid-transition.
+            SubmergeToDepth('SubmergeForReturn', depth_m=depth_m),
             WaitForDuration('WaitSubmerge', duration_sec=settle_sec),
             # 2. Face back toward the gate: coin-flip start heading + 180°.
             YawToRecordedHeading('TurnToGateHeading',

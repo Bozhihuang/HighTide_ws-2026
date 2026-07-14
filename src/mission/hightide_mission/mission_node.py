@@ -80,6 +80,7 @@ class MissionNode(Node):
         self.declare_parameter('run_torpedoes', True)
         self.declare_parameter('run_octagon', True)
         self.declare_parameter('run_return_home', True)
+        self.declare_parameter('run_barrel_roll', True)
 
         # ---- Coin-flip heading recovery ----
         # Before arming: record the FOG heading (points at the gate), wait a
@@ -245,6 +246,7 @@ class MissionNode(Node):
         self.run_torpedoes = bool(self.get_parameter('run_torpedoes').value)
         self.run_octagon = bool(self.get_parameter('run_octagon').value)
         self.run_return_home = bool(self.get_parameter('run_return_home').value)
+        self.run_barrel_roll = bool(self.get_parameter('run_barrel_roll').value)
 
         # Coin-flip heading recovery
         self.coin_flip_enabled = bool(self.get_parameter('coin_flip_enabled').value)
@@ -632,21 +634,22 @@ class MissionNode(Node):
 
         # Barrel roll as the final style maneuver. This is LAST on purpose — it
         # switches to MANUAL and destroys the FOG heading reference, so it must
-        # run only after every heading-dependent task is complete.
-        style_finale = CallTriggerService('BarrelRollFinale', '/hightide/barrel_roll')
+        # run only after every heading-dependent task is complete. Toggle with
+        # run_barrel_roll if you don't want the mission to end in MANUAL mode.
+        main_children = [pre_dive, tasks]
+        if self.run_barrel_roll:
+            main_children += [
+                LogBehavior('Style_Finale', 'Executing barrel roll finale'),
+                CallTriggerService('BarrelRollFinale', '/hightide/barrel_roll'),
+            ]
+        main_children.append(LogBehavior('Mission_Complete', '=== ALL TASKS COMPLETED ==='))
 
         # Main mission sequence — this IS the root. Timeout/emergency handling
         # lives in _tick(), not in the tree (see module docstring).
         main_mission = py_trees.composites.Sequence(
             name='MainMission',
             memory=True,
-            children=[
-                pre_dive,
-                tasks,
-                LogBehavior('Style_Finale', 'Executing barrel roll finale'),
-                style_finale,
-                LogBehavior('Mission_Complete', '=== ALL TASKS COMPLETED ==='),
-            ],
+            children=main_children,
         )
 
         tree = py_trees.trees.BehaviourTree(root=main_mission)
