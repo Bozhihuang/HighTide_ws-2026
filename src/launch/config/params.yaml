@@ -115,59 +115,48 @@ mission_node:
     transit_ki: 0.0                  # <<< REPLACE with your tuned pidtest surge ki
     transit_kd: 0.05                 # <<< REPLACE with your tuned pidtest surge kd
 
-    # ---- Course + inter-mission dead-reckon transits ----
+    # ---- Course + fully dead-reckoned (ZED/PID) inter-task legs ----
     # Courses A and D are DIFFERENT layouts. Fill in BOTH sets; `course` picks
-    # which one runs. Blind-drive a body-frame (forward, lateral) offset on ZED
-    # odometry between tasks, THEN the next task visually acquires. Metres;
-    # lateral +right. 0.0 = disabled (creep-and-search). >>> MEASURE IN POOL. <<<
+    # which one runs. EVERY leg below is the same primitive: a hardcoded
+    # body-frame (forward, lateral) hop, closed-loop PID on ZED odometry, NO
+    # vision hand-off — the whole course (gate exit -> torpedo -> octagon) is
+    # deadreckoned. Metres; lateral +right. 0.0 = that leg is skipped.
+    # >>> MEASURE ALL OF THESE IN THE POOL PER COURSE. <<<
     course: 'D'                       # 'A' or 'D'
 
-    # --- Course A distances ---
-    transit_A_to_slalom_forward_m: 0.0
-    transit_A_to_slalom_lateral_m: 0.0
-    transit_A_to_bins_forward_m: 0.0
-    transit_A_to_bins_lateral_m: 0.0
-    transit_A_to_torpedoes_forward_m: 0.0
-    transit_A_to_torpedoes_lateral_m: 0.0
-    transit_A_to_octagon_forward_m: 0.0
-    transit_A_to_octagon_lateral_m: 0.0
+    # ---- Dead-reckon slalom: yaw / forward / yaw / forward / yaw-back ----
+    # NOT a diagonal (forward, lateral) hop — turn to a heading, drive forward
+    # holding THAT heading, turn again (relative to the now-current heading),
+    # drive forward holding that, then PID-yaw back to the heading recorded
+    # right before this maneuver started (straightens back out). turnN_deg is
+    # compass-style (+ = clockwise), same convention as initial_turn_deg.
+    # 0/0 forward legs are skipped (the turns still run).
+    # >>> MEASURE PER COURSE IN POOL. <<<
+    slalom_turn_tolerance_deg: 3.0
+    slalom_turn_timeout_sec: 15.0
+    # --- Course A ---
+    slalom_A_turn1_deg: 0.0
+    slalom_A_forward1_m: 0.0
+    slalom_A_turn2_deg: 0.0
+    slalom_A_forward2_m: 0.0
+    # --- Course D ---
+    slalom_D_turn1_deg: 30.0     # e.g. turn 30deg clockwise off the gate exit
+    slalom_D_forward1_m: 2.0     # ...then drive 2m holding that heading
+    slalom_D_turn2_deg: -60.0    # then turn 60deg CCW (relative, weaves back)
+    slalom_D_forward2_m: 2.0     # ...then drive 2m holding that heading
+    # (final leg PID-yaws back to the pre-turn heading — no param needed)
 
-    # --- Course D distances ---
-    transit_D_to_slalom_forward_m: 1.0
-    transit_D_to_slalom_lateral_m: 0.0
-    transit_D_to_bins_forward_m: 0.5
-    transit_D_to_bins_lateral_m: 2.5
-    transit_D_to_torpedoes_forward_m: 1.5
-    transit_D_to_torpedoes_lateral_m: -6.0
-    transit_D_to_octagon_forward_m: 0.0
-    transit_D_to_octagon_lateral_m: 0.0
+    # ---- Dead-reckon leg: slalom exit -> torpedo board ----
+    torpedo_A_leg_forward_m: 0.0
+    torpedo_A_leg_lateral_m: 0.0
+    torpedo_D_leg_forward_m: 1.5
+    torpedo_D_leg_lateral_m: -6.0
 
-    # ---- Dead-reckon slalom legs (closed-loop ZED odometry / PID) ----
-    # After the gate, the slalom is navigated as a series of hardcoded body-frame
-    # (forward, lateral) hops — NO vision. lateral is +right. Legs left at 0/0
-    # are skipped, so fill in as many of the 4 slots as you need, in order.
-    # >>> MEASURE THESE IN THE POOL PER COURSE. <<<
-    # Example flow for course D: leg1 nudges past the gate exit, legs 2-4 weave
-    # the slalom; the forward+lateral to the torpedo board is the separate
-    # transit_D_to_torpedoes_* below-the-slalom leg, NOT counted here.
-    # --- Course A slalom legs ---
-    slalom_A_leg1_forward_m: 0.0
-    slalom_A_leg1_lateral_m: 0.0
-    slalom_A_leg2_forward_m: 0.0
-    slalom_A_leg2_lateral_m: 0.0
-    slalom_A_leg3_forward_m: 0.0
-    slalom_A_leg3_lateral_m: 0.0
-    slalom_A_leg4_forward_m: 0.0
-    slalom_A_leg4_lateral_m: 0.0
-    # --- Course D slalom legs ---
-    slalom_D_leg1_forward_m: 1.0    # e.g. 1 m forward off the gate exit
-    slalom_D_leg1_lateral_m: 1.0    # e.g. 1 m right
-    slalom_D_leg2_forward_m: 0.0
-    slalom_D_leg2_lateral_m: 0.0
-    slalom_D_leg3_forward_m: 0.0
-    slalom_D_leg3_lateral_m: 0.0
-    slalom_D_leg4_forward_m: 0.0
-    slalom_D_leg4_lateral_m: 0.0
+    # ---- Dead-reckon leg: torpedo board -> octagon ----
+    octagon_A_leg_forward_m: 0.0
+    octagon_A_leg_lateral_m: 0.0
+    octagon_D_leg_forward_m: 0.0
+    octagon_D_leg_lateral_m: 0.0
 
 # ============== CONTROL ==============
 rc_override_node:

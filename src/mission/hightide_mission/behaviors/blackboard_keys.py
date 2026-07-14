@@ -9,6 +9,9 @@ CURRENT_POSE = 'current_pose'
 # Heading recorded at mission start (points at the gate) BEFORE the coin-flip
 # repositioning; YawToRecordedHeading returns to it after the countdown.
 INITIAL_HEADING = 'initial_heading'
+# Heading recorded right before the slalom's yaw/forward/yaw/forward zigzag
+# (straight-ahead post-gate heading); the maneuver's final leg yaws back to it.
+SLALOM_START_HEADING = 'slalom_start_heading'
 
 # Mission state
 CHOSEN_ROLE = 'chosen_role'       # 'survey_repair' or 'search_rescue'

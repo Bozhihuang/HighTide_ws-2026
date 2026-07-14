@@ -92,7 +92,12 @@ class YawControllerNode(Node):
             last_t = now_t
 
             error = normalize_angle(target_heading - self.current_heading)
-            yaw_cmd = self.yaw_pid.compute(error, dt)
+            # Negate: IMU yaw (ENU) is CCW-positive but ArduSub's yaw channel
+            # is CW-positive — same fix as gate.HeadingTurn / common.yaw_hold
+            # / pre_dive.YawToRecordedHeading. Missing this here drove the
+            # correction the WRONG way after the style spin (looks like a
+            # large extra rotation before it happens to settle).
+            yaw_cmd = -self.yaw_pid.compute(error, dt)
 
             cmd = ThrusterCommand()
             cmd.header.stamp = self.get_clock().now().to_msg()

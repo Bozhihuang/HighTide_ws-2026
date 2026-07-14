@@ -14,10 +14,12 @@ from . import blackboard_keys as bb
 
 class RecordInitialHeading(py_trees.behaviour.Behaviour):
     """
-    Snapshot the FOG/IMU heading at mission start — this points at the gate —
-    into bb.INITIAL_HEADING. The crew then physically repositions the sub
-    during the coin-flip countdown; YawToRecordedHeading later drives back to
-    this heading.
+    Snapshot the FOG/IMU heading into a blackboard key (default
+    bb.INITIAL_HEADING — recorded at mission start, pointing at the gate,
+    before the coin-flip repositioning; YawToRecordedHeading later drives back
+    to it). heading_key lets other behaviors reuse this same record/return-to
+    pattern for a different reference point (e.g. the slalom's
+    bb.SLALOM_START_HEADING, recorded right before its yaw/forward zigzag).
 
     Blocks (RUNNING) until real IMU heading data arrives — it does NOT give up
     on a timeout. Arming can't succeed before MAVROS/IMU is actually live
@@ -28,13 +30,14 @@ class RecordInitialHeading(py_trees.behaviour.Behaviour):
     back to the original heading").
     """
 
-    def __init__(self, name='RecordInitialHeading'):
+    def __init__(self, name='RecordInitialHeading', heading_key=None):
         super().__init__(name)
+        self.heading_key = heading_key or bb.INITIAL_HEADING
         self.start_time = None
         self.last_logged = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
-        self.blackboard.register_key(key=bb.INITIAL_HEADING, access=py_trees.common.Access.WRITE)
+        self.blackboard.register_key(key=self.heading_key, access=py_trees.common.Access.WRITE)
 
     def initialise(self):
         self.start_time = pytime.time()
@@ -44,9 +47,9 @@ class RecordInitialHeading(py_trees.behaviour.Behaviour):
         node = self.blackboard.get(bb.ROS_NODE)
         heading = getattr(node, 'current_heading', None)
         if heading is not None:
-            self.blackboard.set(bb.INITIAL_HEADING, heading)
+            self.blackboard.set(self.heading_key, heading)
             node.get_logger().info(
-                f'Recorded initial (gate-facing) heading: {math.degrees(heading):.1f}°')
+                f'Recorded heading ({self.heading_key}): {math.degrees(heading):.1f}°')
             return py_trees.common.Status.SUCCESS
 
         elapsed = pytime.time() - self.start_time
@@ -97,15 +100,20 @@ class CoinFlipCountdown(py_trees.behaviour.Behaviour):
 
 class YawToRecordedHeading(py_trees.behaviour.Behaviour):
     """
-    PID-rotate back to bb.INITIAL_HEADING (the recorded gate-facing heading),
-    undoing the coin-flip repositioning. Uses the same closed-loop yaw PID and
-    sign convention as gate.HeadingTurn. Best-effort: succeeds immediately if
-    no heading was recorded, and on timeout, so a bad FOG can't stall pre-dive.
+    PID-rotate back to a recorded heading (default bb.INITIAL_HEADING — the
+    gate-facing heading, undoing the coin-flip repositioning). heading_key
+    lets other behaviors reuse this same PID-yaw-back for a different
+    reference (e.g. bb.SLALOM_START_HEADING, to straighten out after the
+    slalom's yaw/forward zigzag). Uses the same closed-loop yaw PID and sign
+    convention as gate.HeadingTurn. Best-effort: succeeds immediately if no
+    heading was recorded, and on timeout, so a bad FOG can't stall the mission.
     """
 
-    def __init__(self, name='YawToRecordedHeading', tolerance_deg=3.0, timeout=20.0,
+    def __init__(self, name='YawToRecordedHeading', heading_key=None,
+                 tolerance_deg=3.0, timeout=20.0,
                  kp=0.225, ki=0.0, kd=0.2, output_limit=0.6):
         super().__init__(name)
+        self.heading_key = heading_key or bb.INITIAL_HEADING
         self.tolerance_deg = tolerance_deg
         self.timeout = timeout
         self.kp, self.ki, self.kd = kp, ki, kd
@@ -117,7 +125,7 @@ class YawToRecordedHeading(py_trees.behaviour.Behaviour):
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.CURRENT_HEADING, access=py_trees.common.Access.READ)
-        self.blackboard.register_key(key=bb.INITIAL_HEADING, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=self.heading_key, access=py_trees.common.Access.READ)
 
     def initialise(self):
         from hightide_navigation import PIDController
@@ -131,16 +139,16 @@ class YawToRecordedHeading(py_trees.behaviour.Behaviour):
                                  output_min=-self.output_limit,
                                  output_max=self.output_limit)
         try:
-            self.target_heading = self.blackboard.get(bb.INITIAL_HEADING)
+            self.target_heading = self.blackboard.get(self.heading_key)
         except KeyError:
             self.target_heading = None
         node = self.blackboard.get(bb.ROS_NODE)
         if self.target_heading is None:
             node.get_logger().warn(
-                'No recorded heading — skipping coin-flip yaw-back')
+                f'No recorded heading ({self.heading_key}) — skipping yaw-back')
         else:
             node.get_logger().info(
-                f'Yawing back to gate heading {math.degrees(self.target_heading):.1f}°')
+                f'Yawing back to recorded heading {math.degrees(self.target_heading):.1f}°')
 
     def update(self):
         from hightide_navigation import normalize_angle
@@ -153,7 +161,7 @@ class YawToRecordedHeading(py_trees.behaviour.Behaviour):
         if (now - self.start_time) > self.timeout:
             node.cmd_pub.publish(ThrusterCommand())
             node.get_logger().warn(
-                'Coin-flip yaw-back timed out — proceeding at current heading')
+                'Yaw-back timed out — proceeding at current heading')
             return py_trees.common.Status.SUCCESS
 
         try:
@@ -166,7 +174,7 @@ class YawToRecordedHeading(py_trees.behaviour.Behaviour):
         error_rad = normalize_angle(self.target_heading - current)
         if abs(math.degrees(error_rad)) <= self.tolerance_deg:
             node.cmd_pub.publish(ThrusterCommand())
-            node.get_logger().info('Back on gate heading')
+            node.get_logger().info('Back on recorded heading')
             return py_trees.common.Status.SUCCESS
 
         dt = now - self.last_t

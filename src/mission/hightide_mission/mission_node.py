@@ -10,7 +10,7 @@ tree with the following structure:
   │            Submerge → Stabilize → PID-yaw back to gate heading)
   ├── Task1_Gate (find → approach → strafe-center role symbol → pass → 2x spin)
   ├── DeeperForSlalom (+0.5 m)
-  ├── SlalomLeg1..N (hardcoded dead-reckon ZED/PID legs — no bins task)
+  ├── Slalom: yaw → forward → yaw → forward → yaw back to straight (no bins task)
   ├── Transit_Torpedoes → Task_Torpedoes
   ├── Transit_Octagon → Task_Octagon
   ├── Task_ReturnHome
@@ -198,15 +198,22 @@ class MissionNode(Node):
                 self.declare_parameter(f'{leg}_{course}_leg_forward_m', 0.0)
                 self.declare_parameter(f'{leg}_{course}_leg_lateral_m', 0.0)
 
-        # Dead-reckon slalom: a series of hardcoded body-frame (forward, lateral)
-        # hops that navigate the whole slalom on ZED odometry (closed-loop PID),
-        # no vision. Per course, 4 leg slots — legs left at 0/0 are skipped, so
-        # fill in as many as you need. lateral is +right.
-        self.slalom_leg_count = 4
+        # Dead-reckon slalom: yaw/drive-straight/yaw/drive-straight/yaw-back —
+        # NOT a diagonal (forward, lateral) hop. Turn to a heading, go forward
+        # holding THAT heading, turn again (relative to the now-current
+        # heading), go forward holding that, then PID-yaw back to the original
+        # (pre-turn) heading. turnN_deg is compass-style (+ = clockwise), same
+        # convention as initial_turn_deg. 0/0 forward legs are skipped (turns
+        # still run). >>> MEASURE PER COURSE IN POOL. <<<
         for course in ('A', 'D'):
-            for i in range(1, self.slalom_leg_count + 1):
-                self.declare_parameter(f'slalom_{course}_leg{i}_forward_m', 0.0)
-                self.declare_parameter(f'slalom_{course}_leg{i}_lateral_m', 0.0)
+            self.declare_parameter(f'slalom_{course}_turn1_deg', 0.0)
+            self.declare_parameter(f'slalom_{course}_forward1_m', 0.0)
+            self.declare_parameter(f'slalom_{course}_turn2_deg', 0.0)
+            self.declare_parameter(f'slalom_{course}_forward2_m', 0.0)
+        # Shared turn tolerance/timeout for all three turns in the maneuver
+        # (turn1, turn2, and the final yaw-back to straight).
+        self.declare_parameter('slalom_turn_tolerance_deg', 3.0)
+        self.declare_parameter('slalom_turn_timeout_sec', 15.0)
 
         self.mission_depth = self.get_parameter('mission_depth_m').value
         self.mission_timeout = self.get_parameter('mission_timeout_sec').value
@@ -230,6 +237,9 @@ class MissionNode(Node):
         self.heading_turn_kd = float(self.get_parameter('heading_turn_kd').value)
         self.heading_turn_output_limit = float(
             self.get_parameter('heading_turn_output_limit').value)
+        self.slalom_turn_tolerance_deg = float(
+            self.get_parameter('slalom_turn_tolerance_deg').value)
+        self.slalom_turn_timeout = float(self.get_parameter('slalom_turn_timeout_sec').value)
 
         # Gate approach / pass-through forward legs, and the extra dive depth
         self.gate_approach_forward_m = float(self.get_parameter('gate_approach_forward_m').value)
@@ -400,8 +410,8 @@ class MissionNode(Node):
                 + (f'advance {self.initial_forward_m:.1f}m'
                    if self.initial_forward_m > 0.01 else 'no advance'))
         self.get_logger().info(
-            f'Post-gate: 2x style spin, then dive +{self.slalom_extra_depth_m:.1f}m '
-            f'for {self.slalom_leg_count} dead-reckon slalom legs (no bins)')
+            f'Post-gate: 2x style spin, then dive +{self.slalom_extra_depth_m:.1f}m, '
+            'yaw/forward/yaw/forward/yaw-back through the slalom (no bins)')
 
     def _on_set_parameters(self, params):
         """Apply live `ros2 param set` updates for the in-water tuning knobs."""
@@ -489,9 +499,43 @@ class MissionNode(Node):
                                      kp=self.transit_kp, ki=self.transit_ki,
                                      kd=self.transit_kd)
 
+        # Slalom: yaw to a heading, drive straight holding it, yaw again
+        # (relative to whatever heading that leaves us at), drive straight
+        # holding THAT, then PID-yaw back to the heading recorded right before
+        # this maneuver started. turnN_deg is compass-style (+ = clockwise),
+        # negated for HeadingTurn's ENU convention — same as initial_turn_deg.
+        def heading_turn(name, degrees):
+            return HeadingTurn(name, degrees=-degrees,
+                               tolerance=self.slalom_turn_tolerance_deg,
+                               timeout=self.slalom_turn_timeout,
+                               kp=self.heading_turn_kp, ki=self.heading_turn_ki,
+                               kd=self.heading_turn_kd,
+                               output_limit=self.heading_turn_output_limit)
+
+        def forward_leg(name, forward_m):
+            return DeadReckonTransit(name, forward_m=forward_m,
+                                     speed=self.transit_thrust,
+                                     kp=self.transit_kp, ki=self.transit_ki,
+                                     kd=self.transit_kd)
+
+        turn1_deg = self.get_parameter(f'slalom_{self.course}_turn1_deg').value
+        forward1_m = self.get_parameter(f'slalom_{self.course}_forward1_m').value
+        turn2_deg = self.get_parameter(f'slalom_{self.course}_turn2_deg').value
+        forward2_m = self.get_parameter(f'slalom_{self.course}_forward2_m').value
         slalom_legs = [
-            deadreckon_leg(f'SlalomLeg{i}', f'slalom_{self.course}_leg{i}')
-            for i in range(1, self.slalom_leg_count + 1)
+            RecordInitialHeading('RecordSlalomStartHeading',
+                                 heading_key=bb.SLALOM_START_HEADING),
+            heading_turn('SlalomTurn1', turn1_deg),
+            forward_leg('SlalomForward1', forward1_m),
+            heading_turn('SlalomTurn2', turn2_deg),
+            forward_leg('SlalomForward2', forward2_m),
+            YawToRecordedHeading('SlalomYawBackStraight',
+                                 heading_key=bb.SLALOM_START_HEADING,
+                                 tolerance_deg=self.slalom_turn_tolerance_deg,
+                                 timeout=self.slalom_turn_timeout,
+                                 kp=self.heading_turn_kp, ki=self.heading_turn_ki,
+                                 kd=self.heading_turn_kd,
+                                 output_limit=self.heading_turn_output_limit),
         ]
 
         # Build the task list conditionally on the run_* toggles — a disabled
