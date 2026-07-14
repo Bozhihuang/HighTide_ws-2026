@@ -28,16 +28,16 @@ mission_node:
     # this same vehicle to a target heading with no concurrent surge, so they use
     # one tuned gain set. yaw_controller_node (a separate node/process) has its
     # own identical-by-default yaw_kp/ki/kd/yaw_output_limit — keep both in sync.
-    heading_turn_kp: 0.225
-    heading_turn_ki: 0.1
-    heading_turn_kd: 0.2
+    heading_turn_kp: 0.20
+    heading_turn_ki: 0.01
+    heading_turn_kd: 0.0
     heading_turn_output_limit: 0.6
 
     # ---- Gate approach / pass-through (closed-loop ZED/PID forward legs) ----
     # Find gate -> drive forward gate_approach_forward_m -> strafe to center the
     # role symbol -> drive forward gate_passthrough_forward_m through the gate.
     gate_approach_forward_m: 1.5
-    gate_passthrough_forward_m: 2.5
+    gate_passthrough_forward_m: 0.5
     # While centering on the role symbol, if it isn't visible yet, strafe this
     # direction ('left'/'right') until it comes into frame. Both the search and
     # the centering strafe use this same slow speed cap the whole way in.
@@ -48,7 +48,7 @@ mission_node:
     # sees the role symbol, or AlignGate never centers on it, within these,
     # each gives up best-effort and the gate task proceeds anyway.
     gate_confirm_timeout_sec: 15.0
-    gate_align_timeout_sec: 30.0
+    gate_align_timeout_sec: 5.0
 
     # After the gate + 2x style spin, dive this much DEEPER for the dead-reckon
     # slalom legs and everything after.
@@ -94,10 +94,10 @@ mission_node:
     # Quick isolation test: set yaw_hold_kp to 0.0 to disable heading
     # correction entirely — if the sub STILL crabs, the problem is hardware
     # (thruster trim/direction), not the yaw correction.
-    yaw_hold_kp: 0.225
-    yaw_hold_kd: 0.2
+    yaw_hold_kp: 0.2
+    yaw_hold_kd: 0.15
     yaw_hold_limit: 0.6        # pidtest's companion is unclamped (±1) — lower only if a glitch ever spins the sub
-    yaw_hold_sign: -1.0
+    yaw_hold_sign: 1.0
 
     # ---- Movement mode: ZED odometry vs open-loop dead reckoning ----
     # 'zed'        = measure travel with ZED odometry (accurate, closed-loop).
@@ -283,9 +283,9 @@ yaw_controller_node:
     # does the SAME "PID-turn to a target heading" action as mission_node's
     # heading_turn_kp/ki/kd/output_limit (gate.HeadingTurn / YawToRecordedHeading)
     # — keep these two in sync when retuning in the pool.
-    yaw_kp: 0.225
+    yaw_kp: 0.2
     yaw_ki: 0.0
-    yaw_kd: 0.2
+    yaw_kd: 0.15
     yaw_output_limit: 0.6
     yaw_tolerance: 0.05          # radians (~2.9°)
     spin_speed: 0.6              # open-loop rate for the spin itself (not PID — see execute_spin)
