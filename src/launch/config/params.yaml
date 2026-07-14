@@ -6,6 +6,24 @@ mission_node:
     tick_rate: 20.0                # Behavior tree tick rate (Hz) — matches pidtest's 20 Hz control loop
     chosen_role: 'survey_repair'   # Pre-race coin-flip choice: survey_repair | search_rescue
 
+    # ---- Coin-flip heading recovery ----
+    # Before arming: record the FOG heading (points at the gate), wait the
+    # countdown while the crew repositions the (unarmed) sub, then after diving
+    # PID-yaw back to that recorded heading. Disable to use the old fixed
+    # opening maneuver (initial_turn_deg / initial_forward_m) instead.
+    coin_flip_enabled: true
+    coin_flip_countdown_sec: 15.0
+
+    # ---- Gate approach / pass-through (closed-loop ZED/PID forward legs) ----
+    # Find gate -> drive forward gate_approach_forward_m -> strafe to center the
+    # role symbol -> drive forward gate_passthrough_forward_m through the gate.
+    gate_approach_forward_m: 1.5
+    gate_passthrough_forward_m: 2.5
+
+    # After the gate + 2x style spin, dive this much DEEPER for the dead-reckon
+    # slalom legs and everything after.
+    slalom_extra_depth_m: 0.5
+
     # Per-mission time budgets (s). Each subtree splits its budget across its own
     # timeout-bearing behaviors, preserving tuned ratios. Sum can exceed
     # mission_timeout_sec — the global cap wins, later tasks get squeezed.
@@ -103,6 +121,33 @@ mission_node:
     transit_D_to_torpedoes_lateral_m: -6.0
     transit_D_to_octagon_forward_m: 0.0
     transit_D_to_octagon_lateral_m: 0.0
+
+    # ---- Dead-reckon slalom legs (closed-loop ZED odometry / PID) ----
+    # After the gate, the slalom is navigated as a series of hardcoded body-frame
+    # (forward, lateral) hops — NO vision. lateral is +right. Legs left at 0/0
+    # are skipped, so fill in as many of the 4 slots as you need, in order.
+    # >>> MEASURE THESE IN THE POOL PER COURSE. <<<
+    # Example flow for course D: leg1 nudges past the gate exit, legs 2-4 weave
+    # the slalom; the forward+lateral to the torpedo board is the separate
+    # transit_D_to_torpedoes_* below-the-slalom leg, NOT counted here.
+    # --- Course A slalom legs ---
+    slalom_A_leg1_forward_m: 0.0
+    slalom_A_leg1_lateral_m: 0.0
+    slalom_A_leg2_forward_m: 0.0
+    slalom_A_leg2_lateral_m: 0.0
+    slalom_A_leg3_forward_m: 0.0
+    slalom_A_leg3_lateral_m: 0.0
+    slalom_A_leg4_forward_m: 0.0
+    slalom_A_leg4_lateral_m: 0.0
+    # --- Course D slalom legs ---
+    slalom_D_leg1_forward_m: 1.0    # e.g. 1 m forward off the gate exit
+    slalom_D_leg1_lateral_m: 1.0    # e.g. 1 m right
+    slalom_D_leg2_forward_m: 0.0
+    slalom_D_leg2_lateral_m: 0.0
+    slalom_D_leg3_forward_m: 0.0
+    slalom_D_leg3_lateral_m: 0.0
+    slalom_D_leg4_forward_m: 0.0
+    slalom_D_leg4_lateral_m: 0.0
 
 # ============== CONTROL ==============
 rc_override_node:
@@ -230,7 +275,8 @@ yaw_controller_node:
     yaw_kd: 0.5
     yaw_tolerance: 0.05          # radians (~2.9°)
     spin_speed: 0.6
-    spin_timeout: 30.0
+    spin_count: 2                # /hightide/yaw_spin does this many full 360°s (gate style points)
+    spin_timeout: 45.0          # must cover spin_count turns at spin_speed (2 turns ~= 21s @ 0.6 rad/s)
 
 dead_reckoning_node:
   ros__parameters:

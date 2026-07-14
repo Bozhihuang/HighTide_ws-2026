@@ -11,8 +11,8 @@ red divider, surge through, then a heading-safe 360° yaw spin for style points.
 
 import py_trees
 from .common import (CallTriggerService, LogBehavior, StopMotion, RecordPose,
-                     WaitForStableDetection, YawSweepSearch, lock_heading,
-                     yaw_hold, distribute_timeout)
+                     WaitForStableDetection, YawSweepSearch, DeadReckonTransit,
+                     lock_heading, yaw_hold, distribute_timeout)
 from . import blackboard_keys as bb
 
 
@@ -32,12 +32,18 @@ GATE_SYMBOLS = {'compass', 'hammer_and_wrench', 'sos'}
 class ConfirmGateRole(py_trees.behaviour.Behaviour):
     """
     Log/confirm the pre-chosen role by checking its symbol is visible on the
-    gate. This never CHANGES the role (that is our own coin-flip decision) — it
-    just waits briefly for the expected symbol so downstream alignment has a
+    gate. This never CHANGES the role (that is our own coin-flip decision) —
+    it just needs the expected symbol in frame so the strafe-align has a
     target, and succeeds best-effort on timeout.
+
+    No motion: FindGate already yawed to bring the gate into view (both halves
+    are one structure, so the role symbol is in/near frame), and the follow-up
+    AlignWithGateHalf does the searching/centering by STRAFING with heading
+    locked. Keeping this behavior stationary avoids adding any yaw drift right
+    before that strafe-align.
     """
 
-    def __init__(self, name='ConfirmGateRole', timeout=15.0):
+    def __init__(self, name='ConfirmGateRole', timeout=10.0):
         super().__init__(name)
         self.timeout = timeout
         self.start_time = None
@@ -58,7 +64,7 @@ class ConfirmGateRole(py_trees.behaviour.Behaviour):
 
         if (time.time() - self.start_time) > self.timeout:
             node.get_logger().warn(
-                f'Role symbol for {role} not seen — proceeding anyway')
+                f'Role symbol for {role} not seen — proceeding to strafe-align anyway')
             return py_trees.common.Status.SUCCESS
 
         try:
@@ -77,16 +83,28 @@ class ConfirmGateRole(py_trees.behaviour.Behaviour):
 
 class AlignWithGateHalf(py_trees.behaviour.Behaviour):
     """
-    Crab-walk to center our role symbol in the frame, keeping heading locked
-    (FOG holds yaw). Records which half of the gate the role symbol sits on
-    into GATE_DIVIDER_SIDE so the slalom can keep the red divider on the same
-    side. Succeeds once centered, or best-effort on timeout.
+    STRAFE (no forward motion) until our role symbol is centered in the frame,
+    keeping heading locked (FOG holds yaw). This is the "strafe until the
+    symbol centers, THEN go forward" step: the forward approach happens before
+    this behavior and the pass-through happens after — here we only translate
+    laterally so the sub crosses the gate through the correct half.
+
+    If the symbol isn't visible yet it strafes side-to-side (a lateral search,
+    still heading-locked) to bring it into frame instead of creeping forward.
+    Records which half the role symbol sits on into GATE_DIVIDER_SIDE (kept for
+    downstream logic). Succeeds once centered, or best-effort on timeout.
     """
 
-    def __init__(self, name='AlignWithGateHalf', timeout=20.0, center_tol=0.12):
+    def __init__(self, name='AlignWithGateHalf', timeout=20.0, center_tol=0.12,
+                 strafe_gain=2.0, strafe_max=0.4,
+                 search_amplitude=0.3, search_period=6.0):
         super().__init__(name)
         self.timeout = timeout
         self.center_tol = center_tol
+        self.strafe_gain = strafe_gain
+        self.strafe_max = strafe_max
+        self.search_amplitude = search_amplitude
+        self.search_period = search_period
         self.start_time = None
         self.side_recorded = False
         self._locked_heading = None
@@ -103,16 +121,18 @@ class AlignWithGateHalf(py_trees.behaviour.Behaviour):
         role = self.blackboard.get(bb.CHOSEN_ROLE)
         node = self.blackboard.get(bb.ROS_NODE)
         self._locked_heading = lock_heading(node)
-        node.get_logger().info(f'Aligning with gate half for role: {role}')
+        node.get_logger().info(f'Strafe-aligning with gate half for role: {role}')
 
     def update(self):
         import time
+        import math
         from hightide_interfaces.msg import ThrusterCommand
         node = self.blackboard.get(bb.ROS_NODE)
         role = self.blackboard.get(bb.CHOSEN_ROLE)
         target_classes = ROLE_SYMBOLS.get(role, ROLE_SYMBOLS['survey_repair'])
+        elapsed = time.time() - self.start_time
 
-        if (time.time() - self.start_time) > self.timeout:
+        if elapsed > self.timeout:
             node.get_logger().warn('Gate align timed out — proceeding best-effort')
             node.cmd_pub.publish(ThrusterCommand())
             return py_trees.common.Status.SUCCESS
@@ -131,11 +151,13 @@ class AlignWithGateHalf(py_trees.behaviour.Behaviour):
 
         cmd = ThrusterCommand()
         cmd.header.stamp = node.get_clock().now().to_msg()
-        cmd.yaw = yaw_hold(node, self._locked_heading)  # hold heading while aligning
+        cmd.yaw = yaw_hold(node, self._locked_heading)  # hold heading throughout
 
         if target is None:
-            # Symbol not visible yet — creep forward slowly to bring it into view.
-            cmd.surge = 0.1
+            # Symbol not visible — strafe side-to-side (heading locked, NO
+            # forward motion) to sweep it into frame.
+            cmd.sway = self.search_amplitude * math.sin(
+                2 * math.pi * elapsed / self.search_period)
             node.cmd_pub.publish(cmd)
             return py_trees.common.Status.RUNNING
 
@@ -143,8 +165,6 @@ class AlignWithGateHalf(py_trees.behaviour.Behaviour):
         normalized_x = target.center_x / img_w
 
         # Record which half the role symbol is on the first time we see it.
-        # This is the side of the gate we pass through; the slalom keeps the
-        # red divider/pipe on the matching side for the bonus.
         if not self.side_recorded:
             side = 'right' if normalized_x > 0.5 else 'left'
             self.blackboard.set(bb.GATE_DIVIDER_SIDE, side)
@@ -152,12 +172,12 @@ class AlignWithGateHalf(py_trees.behaviour.Behaviour):
             node.get_logger().info(f'Role symbol on {side} half of gate')
 
         lateral_error = normalized_x - 0.5
-        cmd.sway = max(-0.4, min(0.4, lateral_error * 2.0))  # + = strafe right
-        cmd.surge = 0.05  # gentle forward creep while centering
-        node.cmd_pub.publish(cmd)
+        cmd.sway = max(-self.strafe_max,
+                       min(self.strafe_max, lateral_error * self.strafe_gain))  # + = strafe right
+        node.cmd_pub.publish(cmd)  # pure strafe — no surge
 
         if abs(lateral_error) < self.center_tol:
-            node.get_logger().info('Centered on role half of gate')
+            node.get_logger().info('Centered on role half of gate — will pass through')
             node.cmd_pub.publish(ThrusterCommand())
             return py_trees.common.Status.SUCCESS
 
@@ -280,13 +300,22 @@ class HeadingTurn(py_trees.behaviour.Behaviour):
         return py_trees.common.Status.RUNNING
 
 
-def create_gate_subtree(total_timeout=240.0) -> py_trees.behaviour.Behaviour:
+def create_gate_subtree(total_timeout=240.0,
+                        approach_forward_m=1.5, passthrough_forward_m=2.5,
+                        transit_speed=0.6, transit_kp=0.2, transit_ki=0.0,
+                        transit_kd=0.05) -> py_trees.behaviour.Behaviour:
     """Build the Task 1 (Gate) behavior subtree.
+
+    Flow: find the gate (yaw sweep) → drive forward `approach_forward_m`
+    (closed-loop ZED/PID) → strafe until the role symbol is centered → drive
+    forward `passthrough_forward_m` through the gate → record pose → 2x style
+    yaw spin.
 
     total_timeout is this mission's time budget, split across the quick-find,
     sweep-search, role-confirm and align deadlines (ratios preserve the old
-    5:45:15:20 tuning). SurgeThrough durations are fixed open-loop motions and
-    are NOT scaled.
+    5:45:15:20 tuning). The approach/pass-through forward distances are
+    closed-loop ZED-odometry legs (same PID transit as the inter-task legs)
+    and are NOT scaled by the time budget.
     """
     t = distribute_timeout(total_timeout, {
         'quick': 5.0, 'sweep': 45.0, 'confirm': 15.0, 'align': 20.0})
@@ -319,10 +348,17 @@ def create_gate_subtree(total_timeout=240.0) -> py_trees.behaviour.Behaviour:
         children=[
             LogBehavior('Gate_Start', 'Starting Task 1: Gate'),
             find_gate_logic,
-            SurgeThrough('ApproachGate', duration=3.0, speed=0.7),
+            # Drive forward a set distance toward the gate (closed-loop ZED/PID,
+            # heading held) before strafing to center the role symbol.
+            DeadReckonTransit('ApproachGate', forward_m=approach_forward_m,
+                              speed=transit_speed, kp=transit_kp, ki=transit_ki,
+                              kd=transit_kd),
             ConfirmGateRole('ConfirmRole', timeout=t['confirm']),
             AlignWithGateHalf('AlignGate', timeout=t['align']),
-            SurgeThrough('PassThrough', duration=5.0, speed=0.7),
+            # Then drive forward THROUGH the gate (closed-loop ZED/PID).
+            DeadReckonTransit('PassThrough', forward_m=passthrough_forward_m,
+                              speed=transit_speed, kp=transit_kp, ki=transit_ki,
+                              kd=transit_kd),
             StopMotion('StopAfterGate'),
             # Remember the pose just PAST the gate (odometry) so Return Home
             # can dead-reckon back to the far side of the gate and cross it
@@ -330,8 +366,9 @@ def create_gate_subtree(total_timeout=240.0) -> py_trees.behaviour.Behaviour:
             # before the gate (the old placement) made return-home target the
             # start box, forcing a blind reverse crossing.
             RecordPose('RecordGatePose', bb.GATE_POSITION),
-            # Real 360° yaw spin for style — heading-safe (FOG returns to start).
-            LogBehavior('Gate_StyleSpin', 'Executing style yaw spin'),
+            # Double 360° yaw spin for style — heading-safe (FOG returns to
+            # start). Count is set by yaw_controller_node's spin_count param.
+            LogBehavior('Gate_StyleSpin', 'Executing 2x style yaw spin'),
             CallTriggerService('YawSpinStyle', '/hightide/yaw_spin'),
             StopMotion('StopAfterSpin'),
             LogBehavior('Gate_Done', 'Task 1 Gate COMPLETE'),

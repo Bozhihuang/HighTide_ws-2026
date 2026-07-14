@@ -6,13 +6,14 @@ This is the master brain of the hightide AUV. It builds a py_trees behavior
 tree with the following structure:
 
   Root (Sequence "MainMission"):
-  ├── PreDive (Arm → AltHold → Submerge → Stabilize)
-  ├── Task1_Gate
-  ├── Task2_Slalom
-  ├── Task3_Bins
-  ├── Task4_Torpedoes
-  ├── Task5_Octagon
-  ├── Task6_ReturnHome
+  ├── PreDive (record heading → coin-flip countdown → Arm → AltHold →
+  │            Submerge → Stabilize → PID-yaw back to gate heading)
+  ├── Task1_Gate (find → approach → strafe-center role symbol → pass → 2x spin)
+  ├── DeeperForSlalom (+0.5 m)
+  ├── SlalomLeg1..N (hardcoded dead-reckon ZED/PID legs — no bins task)
+  ├── Transit_Torpedoes → Task_Torpedoes
+  ├── Transit_Octagon → Task_Octagon
+  ├── Task_ReturnHome
   └── StylePoints (barrel roll)
 
 Safety is enforced at the NODE level, not inside the tree: a behavior-tree
@@ -45,10 +46,9 @@ from hightide_interfaces.msg import (
 
 from hightide_mission.behaviors import blackboard_keys as bb
 from hightide_mission.behaviors.pre_dive import (
-    ArmVehicle, SetAltHoldMode, SubmergeToDepth, WaitForStable)
+    ArmVehicle, SetAltHoldMode, SubmergeToDepth, WaitForStable,
+    RecordInitialHeading, CoinFlipCountdown, YawToRecordedHeading)
 from hightide_mission.behaviors.gate import create_gate_subtree, HeadingTurn
-from hightide_mission.behaviors.slalom import create_slalom_subtree
-from hightide_mission.behaviors.bins import create_bins_subtree
 from hightide_mission.behaviors.torpedoes import create_torpedoes_subtree
 from hightide_mission.behaviors.octagon import create_octagon_subtree
 from hightide_mission.behaviors.return_home import create_return_home_subtree
@@ -71,6 +71,13 @@ class MissionNode(Node):
         # 'survey_repair' or 'search_rescue'.
         self.declare_parameter('chosen_role', 'survey_repair')
 
+        # ---- Coin-flip heading recovery ----
+        # Before arming: record the FOG heading (points at the gate), wait a
+        # countdown while the crew repositions the sub (points it away / parallel
+        # to the wall), then after diving PID-yaw back to that recorded heading.
+        self.declare_parameter('coin_flip_enabled', True)
+        self.declare_parameter('coin_flip_countdown_sec', 15.0)
+
         # Per-mission time budgets (seconds). Each subtree factory splits its
         # budget across its own timeout-bearing behaviors, preserving their tuned
         # ratios (see behaviors.common.distribute_timeout). NOTE: the sum of the
@@ -84,6 +91,17 @@ class MissionNode(Node):
         self.declare_parameter('torpedoes_timeout_sec', 240.0)
         self.declare_parameter('octagon_timeout_sec', 240.0)
         self.declare_parameter('return_home_timeout_sec', 240.0)
+
+        # ---- Gate approach/pass-through (closed-loop ZED/PID forward legs) ----
+        # After finding the gate, drive forward this far, THEN strafe to center
+        # the role symbol, THEN drive forward this far through the gate.
+        self.declare_parameter('gate_approach_forward_m', 1.5)
+        self.declare_parameter('gate_passthrough_forward_m', 2.5)
+
+        # ---- Extra depth for the slalom-and-beyond leg ----
+        # After the gate + style spin, dive this much DEEPER before running the
+        # dead-reckon slalom legs (and everything after).
+        self.declare_parameter('slalom_extra_depth_m', 0.5)
 
         # Slalom (Task 2): if the poles are never visually acquired, blind-drive
         # this far straight through the slalom instead of skipping it (skipping
@@ -153,10 +171,29 @@ class MissionNode(Node):
                 self.declare_parameter(f'transit_{course}_{leg}_forward_m', 0.0)
                 self.declare_parameter(f'transit_{course}_{leg}_lateral_m', 0.0)
 
+        # Dead-reckon slalom: a series of hardcoded body-frame (forward, lateral)
+        # hops that navigate the whole slalom on ZED odometry (closed-loop PID),
+        # no vision. Per course, 4 leg slots — legs left at 0/0 are skipped, so
+        # fill in as many as you need. lateral is +right.
+        self.slalom_leg_count = 4
+        for course in ('A', 'D'):
+            for i in range(1, self.slalom_leg_count + 1):
+                self.declare_parameter(f'slalom_{course}_leg{i}_forward_m', 0.0)
+                self.declare_parameter(f'slalom_{course}_leg{i}_lateral_m', 0.0)
+
         self.mission_depth = self.get_parameter('mission_depth_m').value
         self.mission_timeout = self.get_parameter('mission_timeout_sec').value
         self.tick_rate = self.get_parameter('tick_rate').value
         self.chosen_role = self.get_parameter('chosen_role').value
+
+        # Coin-flip heading recovery
+        self.coin_flip_enabled = bool(self.get_parameter('coin_flip_enabled').value)
+        self.coin_flip_countdown = float(self.get_parameter('coin_flip_countdown_sec').value)
+
+        # Gate approach / pass-through forward legs, and the extra dive depth
+        self.gate_approach_forward_m = float(self.get_parameter('gate_approach_forward_m').value)
+        self.gate_passthrough_forward_m = float(self.get_parameter('gate_passthrough_forward_m').value)
+        self.slalom_extra_depth_m = float(self.get_parameter('slalom_extra_depth_m').value)
 
         # Per-mission budgets
         self.gate_timeout = self.get_parameter('gate_timeout_sec').value
@@ -250,6 +287,7 @@ class MissionNode(Node):
         self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.WRITE)
         self.blackboard.register_key(key=bb.CURRENT_DEPTH, access=py_trees.common.Access.WRITE)
         self.blackboard.register_key(key=bb.CURRENT_HEADING, access=py_trees.common.Access.WRITE)
+        self.blackboard.register_key(key=bb.INITIAL_HEADING, access=py_trees.common.Access.WRITE)
         self.blackboard.register_key(key=bb.CURRENT_POSE, access=py_trees.common.Access.WRITE)
         self.blackboard.register_key(key=bb.VEHICLE_ARMED, access=py_trees.common.Access.WRITE)
         self.blackboard.register_key(key=bb.VEHICLE_MODE, access=py_trees.common.Access.WRITE)
@@ -282,6 +320,7 @@ class MissionNode(Node):
         self.blackboard.set(bb.DEAD_RECKON_MPS, self.dead_reckon_mps)
         self.blackboard.set(bb.CURRENT_DEPTH, 0.0)
         self.blackboard.set(bb.CURRENT_HEADING, 0.0)
+        self.blackboard.set(bb.INITIAL_HEADING, None)
         self.blackboard.set(bb.VEHICLE_ARMED, False)
         self.blackboard.set(bb.VEHICLE_MODE, '')
 
@@ -310,14 +349,22 @@ class MissionNode(Node):
             f'Movement mode: {"ZED odometry" if self.use_odometry else "DEAD RECKON"}'
             + ('' if self.use_odometry else f' ({self.dead_reckon_mps} m/s)')
             + f' | Course: {self.course}')
+        if self.coin_flip_enabled:
+            self.get_logger().info(
+                f'Coin-flip recovery ON: record heading, {self.coin_flip_countdown:.0f}s '
+                'countdown, arm, dive, then PID-yaw back to the gate heading')
+        else:
+            self.get_logger().info(
+                'Opening maneuver: '
+                + (f'turn {abs(self.initial_turn_deg):.0f}deg '
+                   + ('CW' if self.initial_turn_deg > 0 else 'CCW')
+                   if abs(self.initial_turn_deg) > 0.01 else 'no turn')
+                + ' + '
+                + (f'advance {self.initial_forward_m:.1f}m'
+                   if self.initial_forward_m > 0.01 else 'no advance'))
         self.get_logger().info(
-            'Opening maneuver: '
-            + (f'turn {abs(self.initial_turn_deg):.0f}deg '
-               + ('CW' if self.initial_turn_deg > 0 else 'CCW')
-               if abs(self.initial_turn_deg) > 0.01 else 'no turn')
-            + ' + '
-            + (f'advance {self.initial_forward_m:.1f}m'
-               if self.initial_forward_m > 0.01 else 'no advance'))
+            f'Post-gate: 2x style spin, then dive +{self.slalom_extra_depth_m:.1f}m '
+            f'for {self.slalom_leg_count} dead-reckon slalom legs (no bins)')
 
     def _on_set_parameters(self, params):
         """Apply live `ros2 param set` updates for the in-water tuning knobs."""
@@ -332,27 +379,47 @@ class MissionNode(Node):
     def _build_tree(self) -> py_trees.trees.BehaviourTree:
         """Build the full competition behavior tree."""
 
-        # Pre-dive sequence: arm, dive, stabilize, then the opening maneuver
-        # (turn a set amount + advance) before the tasks begin.
+        # Pre-dive sequence. With the coin-flip enabled: record the gate-facing
+        # heading, wait a countdown while the crew repositions the (unarmed)
+        # sub, arm, dive, then PID-yaw back to the recorded heading. Without it,
+        # fall back to the old opening maneuver (fixed turn + advance).
         predive_children = [
             LogBehavior('Mission_Start', '=== MISSION BEGINNING ==='),
+        ]
+        if self.coin_flip_enabled:
+            predive_children += [
+                RecordInitialHeading('RecordInitialHeading'),
+                CoinFlipCountdown('CoinFlipCountdown',
+                                  duration=self.coin_flip_countdown),
+            ]
+        predive_children += [
             ArmVehicle('Arm'),
             SetAltHoldMode('SetAltHold'),
             SubmergeToDepth('Submerge', depth_m=self.mission_depth),
             WaitForStable('Stabilize'),
         ]
-        if abs(self.initial_turn_deg) > 0.01:
-            # The param is compass-style (positive = clockwise, what a driver
-            # expects); HeadingTurn is ENU (positive = counterclockwise) — negate.
+        if self.coin_flip_enabled:
+            # Now at depth — PID-yaw back to the recorded gate heading, undoing
+            # the coin-flip repositioning. No opening advance: the gate task's
+            # own approach drives the forward motion from here.
             predive_children.append(
-                HeadingTurn('InitialTurn', degrees=-self.initial_turn_deg,
-                            tolerance=3.0, timeout=self.initial_turn_timeout))
-        if self.initial_forward_m > 0.01:
-            predive_children.append(
-                DeadReckonTransit('InitialAdvance', forward_m=self.initial_forward_m,
-                                  speed=self.transit_thrust,
-                                  kp=self.transit_kp, ki=self.transit_ki,
-                                  kd=self.transit_kd))
+                YawToRecordedHeading('YawToGateHeading',
+                                     timeout=self.initial_turn_timeout))
+        else:
+            # Legacy opening maneuver (coin-flip disabled): optional fixed turn
+            # + advance toward the gate.
+            if abs(self.initial_turn_deg) > 0.01:
+                # The param is compass-style (positive = clockwise, what a driver
+                # expects); HeadingTurn is ENU (positive = counterclockwise) — negate.
+                predive_children.append(
+                    HeadingTurn('InitialTurn', degrees=-self.initial_turn_deg,
+                                tolerance=3.0, timeout=self.initial_turn_timeout))
+            if self.initial_forward_m > 0.01:
+                predive_children.append(
+                    DeadReckonTransit('InitialAdvance', forward_m=self.initial_forward_m,
+                                      speed=self.transit_thrust,
+                                      kp=self.transit_kp, ki=self.transit_ki,
+                                      kd=self.transit_kd))
         predive_children.append(
             LogBehavior('PreDive_Complete', 'Pre-dive complete — starting tasks'))
         pre_dive = py_trees.composites.Sequence(
@@ -373,8 +440,6 @@ class MissionNode(Node):
         # task's target is in view, the transit bails and hands off to vision
         # (the preset distance is only a ceiling). Class names per the ffc model.
         transit_targets = {
-            'to_slalom': {'slalom'},
-            'to_bins': {'fire', 'blood'},
             'to_torpedoes': {'fire', 'blood'},
             'to_octagon': {'buoy', 'octagon_table'},
         }
@@ -388,19 +453,42 @@ class MissionNode(Node):
                                      kp=self.transit_kp, ki=self.transit_ki,
                                      kd=self.transit_kd)
 
+        # The dead-reckon slalom: hardcoded body-frame (forward, lateral) legs
+        # driven closed-loop on ZED odometry (PID), NO vision hand-off — we
+        # navigate the whole slalom blind. Legs left at 0/0 succeed instantly
+        # (skipped), so only the filled-in ones move the sub.
+        def slalom_leg(i):
+            fwd = self.get_parameter(f'slalom_{self.course}_leg{i}_forward_m').value
+            lat = self.get_parameter(f'slalom_{self.course}_leg{i}_lateral_m').value
+            return DeadReckonTransit(f'SlalomLeg{i}', forward_m=fwd, lateral_m=lat,
+                                     speed=self.transit_thrust,
+                                     kp=self.transit_kp, ki=self.transit_ki,
+                                     kd=self.transit_kd)
+
+        slalom_legs = [slalom_leg(i) for i in range(1, self.slalom_leg_count + 1)]
+
         tasks = py_trees.composites.Sequence(
             name='CompetitionTasks',
             memory=True,
             children=[
-                resilient(create_gate_subtree(total_timeout=self.gate_timeout)),
-                transit('Transit_Slalom', 'to_slalom'),
-                resilient(create_slalom_subtree(
-                    total_timeout=self.slalom_timeout,
-                    fallback_forward_m=self.slalom_fallback_forward_m)),
-                transit('Transit_Bins', 'to_bins'),
-                resilient(create_bins_subtree(total_timeout=self.bins_timeout)),
+                resilient(create_gate_subtree(
+                    total_timeout=self.gate_timeout,
+                    approach_forward_m=self.gate_approach_forward_m,
+                    passthrough_forward_m=self.gate_passthrough_forward_m,
+                    transit_speed=self.transit_thrust,
+                    transit_kp=self.transit_kp, transit_ki=self.transit_ki,
+                    transit_kd=self.transit_kd)),
+                # After the gate + 2x style spin, dive slalom_extra_depth_m deeper
+                # for the rest of the run.
+                resilient(SubmergeToDepth(
+                    'DeeperForSlalom',
+                    depth_m=self.mission_depth + self.slalom_extra_depth_m)),
+                # Dead-reckon slalom legs (ZED/PID). No bins task.
+                *slalom_legs,
+                # Forward + lateral to the torpedo board, then the torpedo task.
                 transit('Transit_Torpedoes', 'to_torpedoes'),
                 resilient(create_torpedoes_subtree(total_timeout=self.torpedoes_timeout)),
+                # Lateral + forward to the octagon, then the octagon task.
                 transit('Transit_Octagon', 'to_octagon'),
                 resilient(create_octagon_subtree(total_timeout=self.octagon_timeout,
                                                  **self.octagon_params)),

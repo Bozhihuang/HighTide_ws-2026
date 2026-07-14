@@ -9,6 +9,7 @@ from std_srvs.srv import Trigger
 from hightide_interfaces.msg import ThrusterCommand
 from hightide_navigation import PIDController, normalize_angle, quaternion_to_yaw
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
 class YawControllerNode(Node):
 
@@ -21,6 +22,10 @@ class YawControllerNode(Node):
         self.declare_parameter('yaw_tolerance', 0.05)
         self.declare_parameter('spin_speed', 0.6)
         self.declare_parameter('spin_timeout', 30.0)
+        # Number of full 360deg rotations the /hightide/yaw_spin style service
+        # performs. 2 = the double spin the gate task asks for. spin_timeout
+        # must be large enough to cover this many turns at spin_speed.
+        self.declare_parameter('spin_count', 2)
 
         self.yaw_pid = PIDController(
             self.get_parameter('yaw_kp').value,
@@ -29,6 +34,7 @@ class YawControllerNode(Node):
         self.yaw_tol = self.get_parameter('yaw_tolerance').value
         self.spin_speed = self.get_parameter('spin_speed').value
         self.spin_timeout = self.get_parameter('spin_timeout').value
+        self.spin_count = int(self.get_parameter('spin_count').value)
 
         self.current_heading = 0.0
         self.heading_received = False
@@ -37,8 +43,17 @@ class YawControllerNode(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=10
         )
+        # execute_spin()/rotate_to_heading() busy-loop inside the service
+        # callback and nested-spin to pump IMU updates while they wait. The
+        # default callback group is mutually exclusive, so if imu_sub shared
+        # it with the service, the nested spin could never actually run the
+        # IMU callback (it's locked for the whole blocking service call) and
+        # current_heading would freeze for the entire spin. Giving imu_sub
+        # its own group lets it keep updating during the nested spin.
+        self.imu_callback_group = MutuallyExclusiveCallbackGroup()
         self.imu_sub = self.create_subscription(
-            Imu, '/mavros/imu/data', self._imu_callback, sensor_qos)
+            Imu, '/mavros/imu/data', self._imu_callback, sensor_qos,
+            callback_group=self.imu_callback_group)
         self.cmd_pub = self.create_publisher(ThrusterCommand, '/hightide/cmd_vel', 10)
 
         # Style spin service (1 full 360° spin)
@@ -131,8 +146,8 @@ class YawControllerNode(Node):
         return success
 
     def _yaw_spin_service(self, request, response):
-        """Service handler for a single 360° yaw spin."""
-        success = self.execute_spin(num_spins=1, clockwise=True)
+        """Service handler for the style yaw spin (spin_count full 360°s)."""
+        success = self.execute_spin(num_spins=self.spin_count, clockwise=True)
         response.success = success
         response.message = 'Yaw spin complete' if success else 'Yaw spin failed'
         return response

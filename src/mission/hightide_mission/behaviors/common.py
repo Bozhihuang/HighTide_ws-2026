@@ -860,9 +860,18 @@ class CallTriggerService(py_trees.behaviour.Behaviour):
     call is async and this behavior ticks RUNNING until the future resolves.
     In best_effort mode a missing service or a failed response still returns
     SUCCESS so a bonus maneuver never aborts the mission.
+
+    wait_timeout is a budget spread ACROSS ticks (checked via the non-blocking
+    service_is_ready(), not a single blocking wait_for_service() call) — DDS
+    discovery for a freshly created client easily exceeds one second right
+    after full_system.launch.py brings up ~15 nodes at once, and a single
+    blocking 1s check used to give up (best-effort SUCCESS, service never
+    actually called) before discovery finished. Polling across ticks over a
+    longer budget gives discovery time to complete without stalling the
+    node's own executor on a blocking call each tick.
     """
 
-    def __init__(self, name, service_name, wait_timeout=1.0, best_effort=True):
+    def __init__(self, name, service_name, wait_timeout=10.0, best_effort=True):
         super().__init__(name)
         self.service_name = service_name
         self.wait_timeout = wait_timeout
@@ -871,12 +880,14 @@ class CallTriggerService(py_trees.behaviour.Behaviour):
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
         self.client = None
         self.future = None
+        self.wait_start = None
 
     def initialise(self):
         from std_srvs.srv import Trigger
         node = self.blackboard.get(bb.ROS_NODE)
         self.client = node.create_client(Trigger, self.service_name)
         self.future = None
+        self.wait_start = pytime.time()
 
     def _finish(self, ok):
         if ok or self.best_effort:
@@ -887,11 +898,14 @@ class CallTriggerService(py_trees.behaviour.Behaviour):
         from std_srvs.srv import Trigger
         node = self.blackboard.get(bb.ROS_NODE)
 
-        if not self.client.wait_for_service(timeout_sec=self.wait_timeout):
-            node.get_logger().warn(f'{self.service_name} not available')
-            return self._finish(False)
-
         if self.future is None:
+            if not self.client.service_is_ready():
+                if (pytime.time() - self.wait_start) > self.wait_timeout:
+                    node.get_logger().warn(
+                        f'{self.service_name} not available after '
+                        f'{self.wait_timeout:.1f}s — giving up')
+                    return self._finish(False)
+                return py_trees.common.Status.RUNNING
             self.future = self.client.call_async(Trigger.Request())
             return py_trees.common.Status.RUNNING
 

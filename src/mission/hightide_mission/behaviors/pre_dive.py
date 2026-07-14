@@ -1,12 +1,167 @@
 """
-Pre-dive behaviors: Arm vehicle, set Alt Hold mode, submerge to depth.
+Pre-dive behaviors: coin-flip heading recovery, arm vehicle, set Alt Hold
+mode, submerge to depth.
 """
 
+import math
 import time as pytime
 import py_trees
 from std_msgs.msg import Float64
 from std_srvs.srv import SetBool, Trigger
+from hightide_interfaces.msg import ThrusterCommand
 from . import blackboard_keys as bb
+
+
+class RecordInitialHeading(py_trees.behaviour.Behaviour):
+    """
+    Snapshot the FOG/IMU heading at mission start — this points at the gate —
+    into bb.INITIAL_HEADING. The crew then physically repositions the sub
+    during the coin-flip countdown; YawToRecordedHeading later drives back to
+    this heading. Waits (RUNNING) up to `timeout` for the first heading to
+    arrive, then best-effort SUCCEEDS (records None so the yaw-back is skipped
+    rather than driving to a bogus 0.0).
+    """
+
+    def __init__(self, name='RecordInitialHeading', timeout=10.0):
+        super().__init__(name)
+        self.timeout = timeout
+        self.start_time = None
+        self.blackboard = self.attach_blackboard_client()
+        self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.INITIAL_HEADING, access=py_trees.common.Access.WRITE)
+
+    def initialise(self):
+        self.start_time = pytime.time()
+
+    def update(self):
+        node = self.blackboard.get(bb.ROS_NODE)
+        heading = getattr(node, 'current_heading', None)
+        if heading is not None:
+            self.blackboard.set(bb.INITIAL_HEADING, heading)
+            node.get_logger().info(
+                f'Recorded initial (gate-facing) heading: {math.degrees(heading):.1f}°')
+            return py_trees.common.Status.SUCCESS
+        if (pytime.time() - self.start_time) > self.timeout:
+            node.get_logger().warn(
+                'No IMU heading at start — coin-flip yaw-back will be skipped')
+            self.blackboard.set(bb.INITIAL_HEADING, None)
+            return py_trees.common.Status.SUCCESS
+        return py_trees.common.Status.RUNNING
+
+
+class CoinFlipCountdown(py_trees.behaviour.Behaviour):
+    """
+    Fixed countdown before arming during which the crew repositions the sub
+    (the coin-flip: pointed away from, or parallel to, the wall). The sub is
+    still UNARMED here, so no motion is commanded — it just waits and logs the
+    remaining seconds so the deck crew can time the repositioning.
+    """
+
+    def __init__(self, name='CoinFlipCountdown', duration=15.0):
+        super().__init__(name)
+        self.duration = duration
+        self.start_time = None
+        self.last_logged = None
+        self.blackboard = self.attach_blackboard_client()
+        self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
+
+    def initialise(self):
+        self.start_time = pytime.time()
+        self.last_logged = None
+        node = self.blackboard.get(bb.ROS_NODE)
+        node.get_logger().info(
+            f'Coin-flip countdown: reposition the sub — {self.duration:.0f}s')
+
+    def update(self):
+        node = self.blackboard.get(bb.ROS_NODE)
+        remaining = self.duration - (pytime.time() - self.start_time)
+        if remaining <= 0.0:
+            node.get_logger().info('Coin-flip countdown complete — arming')
+            return py_trees.common.Status.SUCCESS
+        sec = int(math.ceil(remaining))
+        if sec != self.last_logged:
+            self.last_logged = sec
+            node.get_logger().info(f'  ...{sec}')
+        return py_trees.common.Status.RUNNING
+
+
+class YawToRecordedHeading(py_trees.behaviour.Behaviour):
+    """
+    PID-rotate back to bb.INITIAL_HEADING (the recorded gate-facing heading),
+    undoing the coin-flip repositioning. Uses the same closed-loop yaw PID and
+    sign convention as gate.HeadingTurn. Best-effort: succeeds immediately if
+    no heading was recorded, and on timeout, so a bad FOG can't stall pre-dive.
+    """
+
+    def __init__(self, name='YawToRecordedHeading', tolerance_deg=3.0, timeout=20.0):
+        super().__init__(name)
+        self.tolerance_deg = tolerance_deg
+        self.timeout = timeout
+        self.start_time = None
+        self.last_t = None
+        self.pid = None
+        self.target_heading = None
+        self.blackboard = self.attach_blackboard_client()
+        self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.CURRENT_HEADING, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.INITIAL_HEADING, access=py_trees.common.Access.READ)
+
+    def initialise(self):
+        from hightide_navigation import PIDController
+        self.start_time = pytime.time()
+        self.last_t = self.start_time
+        # Same gains/clamp as gate.HeadingTurn — symmetric clamp so CW and CCW
+        # corrections turn at the same rate.
+        self.pid = PIDController(kp=0.225, ki=0.0, kd=0.2,
+                                 output_min=-0.6, output_max=0.6)
+        try:
+            self.target_heading = self.blackboard.get(bb.INITIAL_HEADING)
+        except KeyError:
+            self.target_heading = None
+        node = self.blackboard.get(bb.ROS_NODE)
+        if self.target_heading is None:
+            node.get_logger().warn(
+                'No recorded heading — skipping coin-flip yaw-back')
+        else:
+            node.get_logger().info(
+                f'Yawing back to gate heading {math.degrees(self.target_heading):.1f}°')
+
+    def update(self):
+        from hightide_navigation import normalize_angle
+        node = self.blackboard.get(bb.ROS_NODE)
+
+        if self.target_heading is None:
+            return py_trees.common.Status.SUCCESS
+
+        now = pytime.time()
+        if (now - self.start_time) > self.timeout:
+            node.cmd_pub.publish(ThrusterCommand())
+            node.get_logger().warn(
+                'Coin-flip yaw-back timed out — proceeding at current heading')
+            return py_trees.common.Status.SUCCESS
+
+        try:
+            current = self.blackboard.get(bb.CURRENT_HEADING)
+        except KeyError:
+            current = None
+        if current is None:
+            return py_trees.common.Status.RUNNING
+
+        error_rad = normalize_angle(self.target_heading - current)
+        if abs(math.degrees(error_rad)) <= self.tolerance_deg:
+            node.cmd_pub.publish(ThrusterCommand())
+            node.get_logger().info('Back on gate heading')
+            return py_trees.common.Status.SUCCESS
+
+        dt = now - self.last_t
+        self.last_t = now
+        # Negate: IMU yaw (ENU) is CCW-positive but ArduSub's yaw channel is
+        # CW-positive — same fix as gate.HeadingTurn / common.yaw_hold.
+        cmd = ThrusterCommand()
+        cmd.header.stamp = node.get_clock().now().to_msg()
+        cmd.yaw = -self.pid.compute(error_rad, dt)
+        node.cmd_pub.publish(cmd)
+        return py_trees.common.Status.RUNNING
 
 
 class ArmVehicle(py_trees.behaviour.Behaviour):
