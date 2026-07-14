@@ -93,10 +93,9 @@ class AlignWithGateHalf(py_trees.behaviour.Behaviour):
     expected to be) instead of creeping forward, until either the symbol
     comes into frame (then it centers normally) or the timeout hits.
     Records which half the role symbol sits on into GATE_DIVIDER_SIDE (kept
-    for downstream logic). Succeeds once centered; on timeout it FAILS —
-    Task1_Gate is a Sequence, so a failed align abandons the rest of the gate
-    task (no PassThrough, no style spin) and the mission's outer
-    FailureIsSuccess wrapper moves straight on to the next task instead.
+    for downstream logic). Succeeds once centered, or best-effort on timeout —
+    a timeout only skips the alignment itself; PassThrough and the style spin
+    still run afterward as part of the same gate task.
     """
 
     def __init__(self, name='AlignWithGateHalf', timeout=20.0, center_tol=0.12,
@@ -140,9 +139,9 @@ class AlignWithGateHalf(py_trees.behaviour.Behaviour):
 
         if elapsed > self.timeout:
             node.get_logger().warn(
-                'Gate align timed out — abandoning gate task, moving on')
+                'Gate align timed out — skipping align, continuing to PassThrough')
             node.cmd_pub.publish(ThrusterCommand())
-            return py_trees.common.Status.FAILURE
+            return py_trees.common.Status.SUCCESS
 
         try:
             detections = self.blackboard.get(bb.DETECTIONS)
