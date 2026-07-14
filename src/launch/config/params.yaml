@@ -73,8 +73,9 @@ mission_node:
 
     # Octagon (Task 5) knobs — tune in-water without code edits. No vision for
     # entry: EnterOctagon is a plain closed-loop ZED/PID advance, same as every
-    # other leg. After surfacing, slowly yaw to find and hold facing a role
-    # icon for the facing bonus (any icon = partial credit, role match = max).
+    # other leg. After surfacing, slowly yaw to find and hold facing OUR chosen
+    # role's symbol (compass/hammer_and_wrench/fire, or sos/blood) for the max
+    # facing bonus.
     octagon_advance_distance_m: 3.0   # ZED/PID advance into the octagon interior
     octagon_surge: 0.3
     octagon_settle_sec: 2.0
