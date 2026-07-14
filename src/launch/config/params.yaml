@@ -69,7 +69,7 @@ mission_node:
     # drive straight return_home_forward_m holding that heading. Turn uses the
     # heading_turn_* PID; the drive uses the transit_* PID + heading hold.
     return_home_depth_m: 0.5
-    return_home_forward_m: 4.0
+    return_home_forward_m: 6.0
     return_home_heading_offset_deg: 180.0
 
     # Octagon (Task 5) knobs — tune in-water without code edits. No vision for
@@ -200,7 +200,7 @@ rc_override_node:
 depth_controller_node:
   ros__parameters:
     kp: 300.0
-    ki: 30.0
+    ki: 35.0
     kd: 0.0
     max_output: 400
     depth_tolerance: 0.5          # meters
