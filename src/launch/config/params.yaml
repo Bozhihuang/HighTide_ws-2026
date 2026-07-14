@@ -291,6 +291,11 @@ yaw_controller_node:
     spin_speed: 0.6              # open-loop rate for the spin itself (not PID — see execute_spin)
     spin_count: 2                # /hightide/yaw_spin does this many full 360°s (gate style points)
     spin_timeout: 45.0          # must cover spin_count turns at spin_speed (2 turns ~= 21s @ 0.6 rad/s)
+    # Dead-stop pause after the spin, before the closed-loop return-to-heading
+    # correction starts — lets angular momentum bleed off first so the
+    # correction doesn't overshoot from still-coasting into it. If it still
+    # overshoots, raise this before touching yaw_kp/kd.
+    spin_settle_sec: 1.5
 
 dead_reckoning_node:
   ros__parameters:

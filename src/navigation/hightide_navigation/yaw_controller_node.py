@@ -34,6 +34,11 @@ class YawControllerNode(Node):
         # performs. 2 = the double spin the gate task asks for. spin_timeout
         # must be large enough to cover this many turns at spin_speed.
         self.declare_parameter('spin_count', 2)
+        # Dead-stop pause after the open-loop spin, BEFORE the closed-loop
+        # position correction starts — lets the spin's angular momentum bleed
+        # off (water drag) so the correction doesn't start while still
+        # physically coasting, which overshoots regardless of PID tuning.
+        self.declare_parameter('spin_settle_sec', 1.5)
 
         yaw_output_limit = self.get_parameter('yaw_output_limit').value
         self.yaw_pid = PIDController(
@@ -45,6 +50,7 @@ class YawControllerNode(Node):
         self.spin_speed = self.get_parameter('spin_speed').value
         self.spin_timeout = self.get_parameter('spin_timeout').value
         self.spin_count = int(self.get_parameter('spin_count').value)
+        self.spin_settle_sec = float(self.get_parameter('spin_settle_sec').value)
 
         self.current_heading = 0.0
         self.heading_received = False
@@ -149,6 +155,20 @@ class YawControllerNode(Node):
             accumulated += abs(delta)
             prev_heading = self.current_heading
 
+            rclpy.spin_once(self, timeout_sec=0)
+            pytime.sleep(0.05)
+
+        # Let the spin's angular momentum bleed off (water drag) before starting
+        # the precision correction — rotate_to_heading's PID only reacts to
+        # POSITION error, it has no idea the vehicle is still physically
+        # coasting from the open-loop spin. Jumping straight into the
+        # correction while still rotating fast overshoots the target every
+        # time, with or without an I-term (this isn't windup, it's an
+        # initial-condition problem: the PID assumes near-zero angular rate at
+        # the start and gets a moving vehicle instead).
+        self.cmd_pub.publish(ThrusterCommand())
+        settle_start = pytime.time()
+        while (pytime.time() - settle_start) < self.spin_settle_sec:
             rclpy.spin_once(self, timeout_sec=0)
             pytime.sleep(0.05)
 
