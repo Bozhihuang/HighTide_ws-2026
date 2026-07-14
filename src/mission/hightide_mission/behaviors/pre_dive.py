@@ -93,10 +93,13 @@ class YawToRecordedHeading(py_trees.behaviour.Behaviour):
     no heading was recorded, and on timeout, so a bad FOG can't stall pre-dive.
     """
 
-    def __init__(self, name='YawToRecordedHeading', tolerance_deg=3.0, timeout=20.0):
+    def __init__(self, name='YawToRecordedHeading', tolerance_deg=3.0, timeout=20.0,
+                 kp=0.225, ki=0.0, kd=0.2, output_limit=0.6):
         super().__init__(name)
         self.tolerance_deg = tolerance_deg
         self.timeout = timeout
+        self.kp, self.ki, self.kd = kp, ki, kd
+        self.output_limit = output_limit
         self.start_time = None
         self.last_t = None
         self.pid = None
@@ -110,10 +113,13 @@ class YawToRecordedHeading(py_trees.behaviour.Behaviour):
         from hightide_navigation import PIDController
         self.start_time = pytime.time()
         self.last_t = self.start_time
-        # Same gains/clamp as gate.HeadingTurn — symmetric clamp so CW and CCW
-        # corrections turn at the same rate.
-        self.pid = PIDController(kp=0.225, ki=0.0, kd=0.2,
-                                 output_min=-0.6, output_max=0.6)
+        # Same gains/clamp as gate.HeadingTurn (and yaw_controller_node's
+        # rotate_to_heading) — symmetric clamp so CW and CCW corrections turn
+        # at the same rate. mission_node passes its heading_turn_* params here
+        # so all three share one tuned source instead of drifting apart.
+        self.pid = PIDController(kp=self.kp, ki=self.ki, kd=self.kd,
+                                 output_min=-self.output_limit,
+                                 output_max=self.output_limit)
         try:
             self.target_heading = self.blackboard.get(bb.INITIAL_HEADING)
         except KeyError:

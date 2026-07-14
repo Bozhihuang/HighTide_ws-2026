@@ -66,10 +66,20 @@ class MissionNode(Node):
         self.declare_parameter('mission_depth_m', 1.0)
         self.declare_parameter('mission_timeout_sec', 900.0)  # 15 minutes
         self.declare_parameter('tick_rate', 10.0)
-        self.declare_parameter('skip_tasks', '')  # Comma-separated task names to skip
         # Pre-race role choice (our coin-flip decision), NOT read off the gate:
         # 'survey_repair' or 'search_rescue'.
         self.declare_parameter('chosen_role', 'survey_repair')
+
+        # ---- Per-task enable/disable ----
+        # Flip any of these false to skip that task entirely (it's just left out
+        # of the tree — not ticked, not even a no-op FailureIsSuccess wrapper).
+        # The transit leg immediately before a disabled task still runs, so the
+        # sub still relocates toward where that task would have been.
+        self.declare_parameter('run_gate', True)
+        self.declare_parameter('run_slalom', True)
+        self.declare_parameter('run_torpedoes', True)
+        self.declare_parameter('run_octagon', True)
+        self.declare_parameter('run_return_home', True)
 
         # ---- Coin-flip heading recovery ----
         # Before arming: record the FOG heading (points at the gate), wait a
@@ -77,6 +87,20 @@ class MissionNode(Node):
         # to the wall), then after diving PID-yaw back to that recorded heading.
         self.declare_parameter('coin_flip_enabled', True)
         self.declare_parameter('coin_flip_countdown_sec', 15.0)
+
+        # ---- "Turn to a target heading" PID (single source of truth) ----
+        # gate.HeadingTurn, pre_dive.YawToRecordedHeading, AND
+        # yaw_controller_node's rotate_to_heading() all perform the exact same
+        # physical action on the exact same vehicle — PID-turn to a target
+        # heading with no concurrent surge — so they should share one tuned
+        # gain set rather than three independently hardcoded numbers. The
+        # mission_node copy below feeds the first two; yaw_controller_node
+        # (a separate process) has its own identical-by-default copy in its
+        # own params.yaml section — keep the two in sync when retuning.
+        self.declare_parameter('heading_turn_kp', 0.225)
+        self.declare_parameter('heading_turn_ki', 0.0)
+        self.declare_parameter('heading_turn_kd', 0.2)
+        self.declare_parameter('heading_turn_output_limit', 0.6)
 
         # Per-mission time budgets (seconds). Each subtree factory splits its
         # budget across its own timeout-bearing behaviors, preserving their tuned
@@ -186,9 +210,23 @@ class MissionNode(Node):
         self.tick_rate = self.get_parameter('tick_rate').value
         self.chosen_role = self.get_parameter('chosen_role').value
 
+        # Per-task enable/disable
+        self.run_gate = bool(self.get_parameter('run_gate').value)
+        self.run_slalom = bool(self.get_parameter('run_slalom').value)
+        self.run_torpedoes = bool(self.get_parameter('run_torpedoes').value)
+        self.run_octagon = bool(self.get_parameter('run_octagon').value)
+        self.run_return_home = bool(self.get_parameter('run_return_home').value)
+
         # Coin-flip heading recovery
         self.coin_flip_enabled = bool(self.get_parameter('coin_flip_enabled').value)
         self.coin_flip_countdown = float(self.get_parameter('coin_flip_countdown_sec').value)
+
+        # Shared "turn to heading" PID gains (gate.HeadingTurn / YawToRecordedHeading)
+        self.heading_turn_kp = float(self.get_parameter('heading_turn_kp').value)
+        self.heading_turn_ki = float(self.get_parameter('heading_turn_ki').value)
+        self.heading_turn_kd = float(self.get_parameter('heading_turn_kd').value)
+        self.heading_turn_output_limit = float(
+            self.get_parameter('heading_turn_output_limit').value)
 
         # Gate approach / pass-through forward legs, and the extra dive depth
         self.gate_approach_forward_m = float(self.get_parameter('gate_approach_forward_m').value)
@@ -404,7 +442,10 @@ class MissionNode(Node):
             # own approach drives the forward motion from here.
             predive_children.append(
                 YawToRecordedHeading('YawToGateHeading',
-                                     timeout=self.initial_turn_timeout))
+                                     timeout=self.initial_turn_timeout,
+                                     kp=self.heading_turn_kp, ki=self.heading_turn_ki,
+                                     kd=self.heading_turn_kd,
+                                     output_limit=self.heading_turn_output_limit))
         else:
             # Legacy opening maneuver (coin-flip disabled): optional fixed turn
             # + advance toward the gate.
@@ -413,7 +454,10 @@ class MissionNode(Node):
                 # expects); HeadingTurn is ENU (positive = counterclockwise) — negate.
                 predive_children.append(
                     HeadingTurn('InitialTurn', degrees=-self.initial_turn_deg,
-                                tolerance=3.0, timeout=self.initial_turn_timeout))
+                                tolerance=3.0, timeout=self.initial_turn_timeout,
+                                kp=self.heading_turn_kp, ki=self.heading_turn_ki,
+                                kd=self.heading_turn_kd,
+                                output_limit=self.heading_turn_output_limit))
             if self.initial_forward_m > 0.01:
                 predive_children.append(
                     DeadReckonTransit('InitialAdvance', forward_m=self.initial_forward_m,
@@ -467,34 +511,44 @@ class MissionNode(Node):
 
         slalom_legs = [slalom_leg(i) for i in range(1, self.slalom_leg_count + 1)]
 
+        # Build the task list conditionally on the run_* toggles — a disabled
+        # task is left OUT of the tree entirely (not ticked at all), but the
+        # transit leg immediately before it still runs so the sub relocates to
+        # where that task would have been.
+        task_children = []
+        if self.run_gate:
+            task_children.append(resilient(create_gate_subtree(
+                total_timeout=self.gate_timeout,
+                approach_forward_m=self.gate_approach_forward_m,
+                passthrough_forward_m=self.gate_passthrough_forward_m,
+                transit_speed=self.transit_thrust,
+                transit_kp=self.transit_kp, transit_ki=self.transit_ki,
+                transit_kd=self.transit_kd)))
+        # Establishes the depth baseline for the rest of the run (gate, if it
+        # ran, was at mission_depth) — runs regardless of run_gate/run_slalom.
+        task_children.append(resilient(SubmergeToDepth(
+            'DeeperForSlalom',
+            depth_m=self.mission_depth + self.slalom_extra_depth_m)))
+        if self.run_slalom:
+            # Dead-reckon slalom legs (ZED/PID). No bins task.
+            task_children.extend(slalom_legs)
+        task_children.append(transit('Transit_Torpedoes', 'to_torpedoes'))
+        if self.run_torpedoes:
+            task_children.append(resilient(
+                create_torpedoes_subtree(total_timeout=self.torpedoes_timeout)))
+        task_children.append(transit('Transit_Octagon', 'to_octagon'))
+        if self.run_octagon:
+            task_children.append(resilient(create_octagon_subtree(
+                total_timeout=self.octagon_timeout, **self.octagon_params)))
+        if self.run_return_home:
+            # Octagon → gate is handled by Return Home's own dead-reckon.
+            task_children.append(resilient(
+                create_return_home_subtree(total_timeout=self.return_home_timeout)))
+
         tasks = py_trees.composites.Sequence(
             name='CompetitionTasks',
             memory=True,
-            children=[
-                resilient(create_gate_subtree(
-                    total_timeout=self.gate_timeout,
-                    approach_forward_m=self.gate_approach_forward_m,
-                    passthrough_forward_m=self.gate_passthrough_forward_m,
-                    transit_speed=self.transit_thrust,
-                    transit_kp=self.transit_kp, transit_ki=self.transit_ki,
-                    transit_kd=self.transit_kd)),
-                # After the gate + 2x style spin, dive slalom_extra_depth_m deeper
-                # for the rest of the run.
-                resilient(SubmergeToDepth(
-                    'DeeperForSlalom',
-                    depth_m=self.mission_depth + self.slalom_extra_depth_m)),
-                # Dead-reckon slalom legs (ZED/PID). No bins task.
-                *slalom_legs,
-                # Forward + lateral to the torpedo board, then the torpedo task.
-                transit('Transit_Torpedoes', 'to_torpedoes'),
-                resilient(create_torpedoes_subtree(total_timeout=self.torpedoes_timeout)),
-                # Lateral + forward to the octagon, then the octagon task.
-                transit('Transit_Octagon', 'to_octagon'),
-                resilient(create_octagon_subtree(total_timeout=self.octagon_timeout,
-                                                 **self.octagon_params)),
-                # Octagon → gate is handled by Return Home's own dead-reckon.
-                resilient(create_return_home_subtree(total_timeout=self.return_home_timeout)),
-            ],
+            children=task_children,
         )
 
         # Barrel roll as the final style maneuver. This is LAST on purpose — it

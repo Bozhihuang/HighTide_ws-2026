@@ -6,6 +6,15 @@ mission_node:
     tick_rate: 20.0                # Behavior tree tick rate (Hz) — matches pidtest's 20 Hz control loop
     chosen_role: 'survey_repair'   # Pre-race coin-flip choice: survey_repair | search_rescue
 
+    # ---- Per-task enable/disable ----
+    # false = skip that task entirely (not even ticked). The transit leg right
+    # before a disabled task still runs, so the sub still relocates there.
+    run_gate: true
+    run_slalom: true
+    run_torpedoes: true
+    run_octagon: true
+    run_return_home: true
+
     # ---- Coin-flip heading recovery ----
     # Before arming: record the FOG heading (points at the gate), wait the
     # countdown while the crew repositions the (unarmed) sub, then after diving
@@ -13,6 +22,16 @@ mission_node:
     # opening maneuver (initial_turn_deg / initial_forward_m) instead.
     coin_flip_enabled: true
     coin_flip_countdown_sec: 15.0
+
+    # ---- "Turn to a target heading" PID (single source of truth) ----
+    # Shared by gate.HeadingTurn and pre_dive.YawToRecordedHeading — both PID-turn
+    # this same vehicle to a target heading with no concurrent surge, so they use
+    # one tuned gain set. yaw_controller_node (a separate node/process) has its
+    # own identical-by-default yaw_kp/ki/kd/yaw_output_limit — keep both in sync.
+    heading_turn_kp: 0.225
+    heading_turn_ki: 0.0
+    heading_turn_kd: 0.2
+    heading_turn_output_limit: 0.6
 
     # ---- Gate approach / pass-through (closed-loop ZED/PID forward legs) ----
     # Find gate -> drive forward gate_approach_forward_m -> strafe to center the
@@ -270,11 +289,16 @@ vision_servo_node:
 
 yaw_controller_node:
   ros__parameters:
-    yaw_kp: 2.0
-    yaw_ki: 0.1
-    yaw_kd: 0.5
+    # rotate_to_heading() (used after the style spin, and by /hightide/set_heading)
+    # does the SAME "PID-turn to a target heading" action as mission_node's
+    # heading_turn_kp/ki/kd/output_limit (gate.HeadingTurn / YawToRecordedHeading)
+    # — keep these two in sync when retuning in the pool.
+    yaw_kp: 0.225
+    yaw_ki: 0.0
+    yaw_kd: 0.2
+    yaw_output_limit: 0.6
     yaw_tolerance: 0.05          # radians (~2.9°)
-    spin_speed: 0.6
+    spin_speed: 0.6              # open-loop rate for the spin itself (not PID — see execute_spin)
     spin_count: 2                # /hightide/yaw_spin does this many full 360°s (gate style points)
     spin_timeout: 45.0          # must cover spin_count turns at spin_speed (2 turns ~= 21s @ 0.6 rad/s)
 

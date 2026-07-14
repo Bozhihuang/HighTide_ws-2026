@@ -16,9 +16,17 @@ class YawControllerNode(Node):
     def __init__(self):
         super().__init__('yaw_controller_node')
 
-        self.declare_parameter('yaw_kp', 0.0)
+        # rotate_to_heading() below does the EXACT same physical action as
+        # mission_node's gate.HeadingTurn / pre_dive.YawToRecordedHeading —
+        # PID-turn this same vehicle to a target heading, no concurrent surge —
+        # so these default to the SAME gains/clamp as mission_node's
+        # heading_turn_* params. Keep them in sync when retuning in the pool
+        # (this is a separate process/node, so they can't literally share one
+        # Python value — just the same numbers in each params.yaml section).
+        self.declare_parameter('yaw_kp', 0.225)
         self.declare_parameter('yaw_ki', 0.0)
-        self.declare_parameter('yaw_kd', 0.0)
+        self.declare_parameter('yaw_kd', 0.2)
+        self.declare_parameter('yaw_output_limit', 0.6)
         self.declare_parameter('yaw_tolerance', 0.05)
         self.declare_parameter('spin_speed', 0.6)
         self.declare_parameter('spin_timeout', 30.0)
@@ -27,10 +35,12 @@ class YawControllerNode(Node):
         # must be large enough to cover this many turns at spin_speed.
         self.declare_parameter('spin_count', 2)
 
+        yaw_output_limit = self.get_parameter('yaw_output_limit').value
         self.yaw_pid = PIDController(
             self.get_parameter('yaw_kp').value,
             self.get_parameter('yaw_ki').value,
-            self.get_parameter('yaw_kd').value)
+            self.get_parameter('yaw_kd').value,
+            output_min=-yaw_output_limit, output_max=yaw_output_limit)
         self.yaw_tol = self.get_parameter('yaw_tolerance').value
         self.spin_speed = self.get_parameter('spin_speed').value
         self.spin_timeout = self.get_parameter('spin_timeout').value

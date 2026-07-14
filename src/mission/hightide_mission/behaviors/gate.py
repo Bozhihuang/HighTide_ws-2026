@@ -4,15 +4,14 @@ Task 1: Begin Assessment (Gate) — pass through the half matching our role.
 The role (Survey & Repair vs Search & Rescue) is a PRE-RACE decision set via
 the `chosen_role` parameter on the mission node — it is NOT read off the gate
 (both symbols are always present, so detecting one tells us nothing about our
-choice). Strategy: find the gate, strafe (crab walk) to center our role symbol,
-record which half it was on so the slalom can stay on the matching side of the
-red divider, surge through, then a heading-safe 360° yaw spin for style points.
+choice). Strategy: drive forward blind (no "is the gate in frame" check first),
+confirm the role symbol, strafe (crab walk) to center it, record which half it
+was on, surge through, then a heading-safe 2x 360° yaw spin for style points.
 """
 
 import py_trees
 from .common import (CallTriggerService, LogBehavior, StopMotion, RecordPose,
-                     WaitForStableDetection, YawSweepSearch, DeadReckonTransit,
-                     lock_heading, yaw_hold, distribute_timeout)
+                     DeadReckonTransit, lock_heading, yaw_hold, distribute_timeout)
 from . import blackboard_keys as bb
 
 
@@ -218,16 +217,27 @@ class SurgeThrough(py_trees.behaviour.Behaviour):
 
 
 class HeadingTurn(py_trees.behaviour.Behaviour):
-    """Turns the AUV a specific number of degrees using closed-loop PID control."""
+    """Turns the AUV a specific number of degrees using closed-loop PID control.
 
-    def __init__(self, name='HeadingTurn', degrees=180.0, tolerance=2.0, timeout=10.0):
+    Gains default to the same values as pre_dive.YawToRecordedHeading and
+    yaw_controller_node's rotate_to_heading() — all three do the identical
+    physical action (PID-turn the same vehicle to a target heading), so they
+    should be tuned together rather than drifting apart. mission_node passes
+    its heading_turn_kp/ki/kd/output_limit params here so there's one source
+    of truth instead of each hardcoding its own copy.
+    """
+
+    def __init__(self, name='HeadingTurn', degrees=180.0, tolerance=2.0, timeout=10.0,
+                 kp=0.225, ki=0.0, kd=0.2, output_limit=0.6):
         super().__init__(name)
         self.target_degrees_offset = degrees
         self.tolerance_deg = tolerance
         self.timeout = timeout
+        self.kp, self.ki, self.kd = kp, ki, kd
+        self.output_limit = output_limit
         self.start_time = None
         self.target_heading = None
-        
+
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.CURRENT_HEADING, access=py_trees.common.Access.READ)
@@ -237,13 +247,13 @@ class HeadingTurn(py_trees.behaviour.Behaviour):
         import math
         from hightide_navigation import normalize_angle, PIDController
         self.start_time = time.time()
-        
-        # We need a local PID controller for this maneuver. Clamp BOTH sides —
-        # output_min defaults to -1.0, which made clockwise turns (negative
-        # error, e.g. a 270° request that normalizes to -90°) spin at full
-        # rate while counterclockwise ones were capped at 0.6.
-        self.pid = PIDController(kp=0.225, ki=0.0, kd=0.2,
-                                 output_min=-0.6, output_max=0.6)
+
+        # Clamp BOTH sides — output_min defaults to -1.0, which made clockwise
+        # turns (negative error, e.g. a 270° request that normalizes to -90°)
+        # spin at full rate while counterclockwise ones were capped.
+        self.pid = PIDController(kp=self.kp, ki=self.ki, kd=self.kd,
+                                 output_min=-self.output_limit,
+                                 output_max=self.output_limit)
         
         current_heading = self.blackboard.get(bb.CURRENT_HEADING)
         if current_heading is None:
@@ -306,50 +316,26 @@ def create_gate_subtree(total_timeout=240.0,
                         transit_kd=0.05) -> py_trees.behaviour.Behaviour:
     """Build the Task 1 (Gate) behavior subtree.
 
-    Flow: find the gate (yaw sweep) → drive forward `approach_forward_m`
-    (closed-loop ZED/PID) → strafe until the role symbol is centered → drive
-    forward `passthrough_forward_m` through the gate → record pose → 2x style
-    yaw spin.
+    Flow: drive forward `approach_forward_m` (closed-loop ZED/PID, no vision
+    check first) → confirm the role symbol is visible → strafe until it's
+    centered → drive forward `passthrough_forward_m` through the gate →
+    record pose → 2x style yaw spin.
 
-    total_timeout is this mission's time budget, split across the quick-find,
-    sweep-search, role-confirm and align deadlines (ratios preserve the old
-    5:45:15:20 tuning). The approach/pass-through forward distances are
-    closed-loop ZED-odometry legs (same PID transit as the inter-task legs)
-    and are NOT scaled by the time budget.
+    total_timeout is this mission's time budget, split across the role-confirm
+    and align deadlines (ratio preserved from the old tuning). The
+    approach/pass-through forward distances are closed-loop ZED-odometry legs
+    (same PID transit as the inter-task legs) and are NOT scaled by the time
+    budget.
     """
-    t = distribute_timeout(total_timeout, {
-        'quick': 5.0, 'sweep': 45.0, 'confirm': 15.0, 'align': 20.0})
-
-    # Find the gate WITHOUT assuming which way we're pointing. The old logic
-    # only handled "gate dead ahead" or "gate exactly 180° behind"; if the sub
-    # started 90° off (parallel to the wall) it could never find the gate and
-    # just crept into it. Instead:
-    #   1. If we're already facing the gate, confirm it robustly (4 of the last
-    #      5 frames) so a single false positive can't commit us forward.
-    #   2. Otherwise rotate in place and sweep for the gate at ANY bearing,
-    #      confirming with the same M-of-N filter. Yaw-only — never surge — so a
-    #      wrong orientation can't drive us into a wall while searching.
-    # memory=True: once QuickFindGate fails, stay on the sweep instead of
-    # restarting the quick check every tick.
-    find_gate_logic = py_trees.composites.Selector(
-        name='FindGate',
-        memory=True,
-        children=[
-            WaitForStableDetection('QuickFindGate', GATE_SYMBOLS,
-                                   window=5, min_hits=4, timeout=t['quick']),
-            YawSweepSearch('SweepForGate', GATE_SYMBOLS,
-                           window=5, min_hits=4, timeout=t['sweep']),
-        ]
-    )
+    t = distribute_timeout(total_timeout, {'confirm': 15.0, 'align': 20.0})
 
     return py_trees.composites.Sequence(
         name='Task1_Gate',
         memory=True,
         children=[
             LogBehavior('Gate_Start', 'Starting Task 1: Gate'),
-            find_gate_logic,
-            # Drive forward a set distance toward the gate (closed-loop ZED/PID,
-            # heading held) before strafing to center the role symbol.
+            # Drive forward blind (closed-loop ZED/PID, heading held) — no
+            # "is the gate already in frame" check first.
             DeadReckonTransit('ApproachGate', forward_m=approach_forward_m,
                               speed=transit_speed, kp=transit_kp, ki=transit_ki,
                               kd=transit_kd),
