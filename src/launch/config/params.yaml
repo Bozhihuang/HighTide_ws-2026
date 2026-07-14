@@ -37,7 +37,7 @@ mission_node:
     # ---- Gate approach / pass-through (closed-loop ZED/PID forward legs) ----
     # Find gate -> drive forward gate_approach_forward_m -> strafe to center the
     # role symbol -> drive forward gate_passthrough_forward_m through the gate.
-    gate_approach_forward_m: 1.7
+    gate_approach_forward_m: 2.3
     gate_passthrough_forward_m: 1.5
     # While centering on the role symbol, if it isn't visible yet, strafe this
     # direction ('left'/'right') until it comes into frame. Both the search and
