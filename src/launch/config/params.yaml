@@ -29,7 +29,7 @@ mission_node:
     # one tuned gain set. yaw_controller_node (a separate node/process) has its
     # own identical-by-default yaw_kp/ki/kd/yaw_output_limit — keep both in sync.
     heading_turn_kp: 0.225
-    heading_turn_ki: 0.0
+    heading_turn_ki: 0.1
     heading_turn_kd: 0.2
     heading_turn_output_limit: 0.6
 
