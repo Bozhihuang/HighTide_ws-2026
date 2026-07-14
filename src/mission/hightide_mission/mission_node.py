@@ -110,8 +110,6 @@ class MissionNode(Node):
         # squeezed if earlier ones run long. Fixed open-loop motions (surge/pass/
         # settle) are NOT part of these budgets and never scale.
         self.declare_parameter('gate_timeout_sec', 240.0)
-        self.declare_parameter('slalom_timeout_sec', 240.0)
-        self.declare_parameter('bins_timeout_sec', 240.0)
         self.declare_parameter('torpedoes_timeout_sec', 240.0)
         self.declare_parameter('octagon_timeout_sec', 240.0)
         self.declare_parameter('return_home_timeout_sec', 240.0)
@@ -127,19 +125,11 @@ class MissionNode(Node):
         # dead-reckon slalom legs (and everything after).
         self.declare_parameter('slalom_extra_depth_m', 0.5)
 
-        # Slalom (Task 2): if the poles are never visually acquired, blind-drive
-        # this far straight through the slalom instead of skipping it (skipping
-        # strands the sub on the near side and wrecks later transit distances).
-        self.declare_parameter('slalom_fallback_forward_m', 5.0)
-
         # Octagon (Task 5) tuning knobs — surfaced so they can be tuned in-water
-        # via `ros2 param set` without editing code.
-        self.declare_parameter('octagon_advance_distance_m', 3.0)  # blind odom advance
+        # via `ros2 param set` without editing code. No vision here — entry is a
+        # plain deadreckon leg (octagon_{course}_leg_*), same as everything else.
+        self.declare_parameter('octagon_advance_distance_m', 3.0)  # blind ZED/PID advance
         self.declare_parameter('octagon_surge', 0.3)
-        self.declare_parameter('octagon_buoy_fill_frac', 0.7)      # buoy box fill => inside
-        self.declare_parameter('octagon_table_fill_frac', 0.6)     # table box fill => inside
-        self.declare_parameter('octagon_table_class', 'octagon_table')
-        self.declare_parameter('octagon_confidence', 0.4)          # min det confidence
         self.declare_parameter('octagon_settle_sec', 2.0)          # fixed settle (not scaled)
         self.declare_parameter('octagon_surface_depth_m', 0.3)     # "at surface" threshold
 
@@ -236,10 +226,6 @@ class MissionNode(Node):
 
         # Per-mission budgets
         self.gate_timeout = self.get_parameter('gate_timeout_sec').value
-        self.slalom_timeout = self.get_parameter('slalom_timeout_sec').value
-        self.slalom_fallback_forward_m = float(
-            self.get_parameter('slalom_fallback_forward_m').value)
-        self.bins_timeout = self.get_parameter('bins_timeout_sec').value
         self.torpedoes_timeout = self.get_parameter('torpedoes_timeout_sec').value
         self.octagon_timeout = self.get_parameter('octagon_timeout_sec').value
         self.return_home_timeout = self.get_parameter('return_home_timeout_sec').value
@@ -273,14 +259,10 @@ class MissionNode(Node):
             self.get_logger().warn(f"Unknown course '{self.course}' — defaulting to A")
             self.course = 'A'
 
-        # Octagon knobs
+        # Octagon knobs (no vision — EnterOctagon is a plain deadreckon leg)
         self.octagon_params = dict(
             advance_distance_m=self.get_parameter('octagon_advance_distance_m').value,
             surge=self.get_parameter('octagon_surge').value,
-            buoy_fill_frac=self.get_parameter('octagon_buoy_fill_frac').value,
-            table_fill_frac=self.get_parameter('octagon_table_fill_frac').value,
-            table_class=self.get_parameter('octagon_table_class').value,
-            confidence=self.get_parameter('octagon_confidence').value,
             settle_sec=self.get_parameter('octagon_settle_sec').value,
             surface_depth_m=self.get_parameter('octagon_surface_depth_m').value,
         )
@@ -524,7 +506,9 @@ class MissionNode(Node):
         task_children.append(deadreckon_leg('Transit_Octagon', f'octagon_{self.course}_leg'))
         if self.run_octagon:
             task_children.append(resilient(create_octagon_subtree(
-                total_timeout=self.octagon_timeout, **self.octagon_params)))
+                total_timeout=self.octagon_timeout, **self.octagon_params,
+                transit_kp=self.transit_kp, transit_ki=self.transit_ki,
+                transit_kd=self.transit_kd)))
         if self.run_return_home:
             # Octagon → gate is handled by Return Home's own dead-reckon.
             task_children.append(resilient(
