@@ -11,7 +11,7 @@ mission_node:
     # before a disabled task still runs, so the sub still relocates there.
     run_gate: true
     run_slalom: true
-    run_torpedoes: true
+    run_torpedoes: false
     run_octagon: true
     run_return_home: true
 
@@ -29,7 +29,7 @@ mission_node:
     # one tuned gain set. yaw_controller_node (a separate node/process) has its
     # own identical-by-default yaw_kp/ki/kd/yaw_output_limit — keep both in sync.
     heading_turn_kp: 0.20
-    heading_turn_ki: 0.01
+    heading_turn_ki: 0.015
     heading_turn_kd: 0.0
     heading_turn_output_limit: 0.6
 
@@ -37,7 +37,7 @@ mission_node:
     # Find gate -> drive forward gate_approach_forward_m -> strafe to center the
     # role symbol -> drive forward gate_passthrough_forward_m through the gate.
     gate_approach_forward_m: 1.5
-    gate_passthrough_forward_m: 0.5
+    gate_passthrough_forward_m: 1.5
     # While centering on the role symbol, if it isn't visible yet, strafe this
     # direction ('left'/'right') until it comes into frame. Both the search and
     # the centering strafe use this same slow speed cap the whole way in.
@@ -95,7 +95,7 @@ mission_node:
     # correction entirely — if the sub STILL crabs, the problem is hardware
     # (thruster trim/direction), not the yaw correction.
     yaw_hold_kp: 0.2
-    yaw_hold_kd: 0.15
+    yaw_hold_kd: 0.13
     yaw_hold_limit: 0.6        # pidtest's companion is unclamped (±1) — lower only if a glitch ever spins the sub
     yaw_hold_sign: 1.0
 
@@ -141,9 +141,9 @@ mission_node:
     slalom_A_forward2_m: 0.0
     # --- Course D ---
     slalom_D_turn1_deg: 30.0     # e.g. turn 30deg clockwise off the gate exit
-    slalom_D_forward1_m: 2.0     # ...then drive 2m holding that heading
+    slalom_D_forward1_m: 1.0     # ...then drive 2m holding that heading
     slalom_D_turn2_deg: -60.0    # then turn 60deg CCW (relative, weaves back)
-    slalom_D_forward2_m: 2.0     # ...then drive 2m holding that heading
+    slalom_D_forward2_m: 1.0     # ...then drive 2m holding that heading
     # (final leg PID-yaws back to the pre-turn heading — no param needed)
 
     # ---- Dead-reckon leg: slalom exit -> torpedo board ----
@@ -153,7 +153,7 @@ mission_node:
     torpedo_D_leg_lateral_m: -6.0
 
     # ---- Dead-reckon leg: torpedo board -> octagon ----
-    octagon_A_leg_forward_m: 0.0
+    octagon_A_leg_forward_m: 3.0
     octagon_A_leg_lateral_m: 0.0
     octagon_D_leg_forward_m: 0.0
     octagon_D_leg_lateral_m: 0.0
