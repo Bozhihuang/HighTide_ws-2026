@@ -1,7 +1,7 @@
 # ============== MISSION ==============
 mission_node:
   ros__parameters:
-    mission_depth_m: 1.0           # Competition pool depth target
+    mission_depth_m: 0.5           # Competition pool depth target
     mission_timeout_sec: 900.0     # 15 minute mission window
     tick_rate: 20.0                # Behavior tree tick rate (Hz) — matches pidtest's 20 Hz control loop
     chosen_role: 'survey_repair'   # Pre-race coin-flip choice: survey_repair | search_rescue
@@ -149,8 +149,8 @@ mission_node:
     # ---- Dead-reckon leg: slalom exit -> torpedo board ----
     torpedo_A_leg_forward_m: 0.0
     torpedo_A_leg_lateral_m: 0.0
-    torpedo_D_leg_forward_m: 1.5
-    torpedo_D_leg_lateral_m: -6.0
+    torpedo_D_leg_forward_m: 0.0
+    torpedo_D_leg_lateral_m: 0.0
 
     # ---- Dead-reckon leg: torpedo board -> octagon ----
     octagon_A_leg_forward_m: 3.0
@@ -288,7 +288,7 @@ yaw_controller_node:
     yaw_kd: 0.15
     yaw_output_limit: 0.6
     yaw_tolerance: 0.05          # radians (~2.9°)
-    spin_speed: 0.6              # open-loop rate for the spin itself (not PID — see execute_spin)
+    spin_speed: 0.3              # open-loop rate for the spin itself (not PID — see execute_spin)
     spin_count: 2                # /hightide/yaw_spin does this many full 360°s (gate style points)
     spin_timeout: 45.0          # must cover spin_count turns at spin_speed (2 turns ~= 21s @ 0.6 rad/s)
     # Dead-stop pause after the spin, before the closed-loop return-to-heading
