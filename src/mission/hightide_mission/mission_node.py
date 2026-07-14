@@ -119,6 +119,13 @@ class MissionNode(Node):
         # the role symbol, THEN drive forward this far through the gate.
         self.declare_parameter('gate_approach_forward_m', 1.5)
         self.declare_parameter('gate_passthrough_forward_m', 2.5)
+        # While centering, if the role symbol isn't visible yet, strafe this
+        # direction ('left'/'right') until it comes into frame. Both the
+        # search and the centering strafe use the same slow speed cap — the
+        # whole align step moves slowly, no fast snap once the symbol appears.
+        self.declare_parameter('gate_align_search_side', 'right')
+        self.declare_parameter('gate_align_search_speed', 0.15)
+        self.declare_parameter('gate_align_strafe_max', 0.15)
 
         # ---- Extra depth for the slalom-and-beyond leg ----
         # After the gate + style spin, dive this much DEEPER before running the
@@ -222,6 +229,9 @@ class MissionNode(Node):
         # Gate approach / pass-through forward legs, and the extra dive depth
         self.gate_approach_forward_m = float(self.get_parameter('gate_approach_forward_m').value)
         self.gate_passthrough_forward_m = float(self.get_parameter('gate_passthrough_forward_m').value)
+        self.gate_align_search_side = str(self.get_parameter('gate_align_search_side').value)
+        self.gate_align_search_speed = float(self.get_parameter('gate_align_search_speed').value)
+        self.gate_align_strafe_max = float(self.get_parameter('gate_align_strafe_max').value)
         self.slalom_extra_depth_m = float(self.get_parameter('slalom_extra_depth_m').value)
 
         # Per-mission budgets
@@ -490,7 +500,10 @@ class MissionNode(Node):
                 passthrough_forward_m=self.gate_passthrough_forward_m,
                 transit_speed=self.transit_thrust,
                 transit_kp=self.transit_kp, transit_ki=self.transit_ki,
-                transit_kd=self.transit_kd)))
+                transit_kd=self.transit_kd,
+                align_search_side=self.gate_align_search_side,
+                align_search_speed=self.gate_align_search_speed,
+                align_strafe_max=self.gate_align_strafe_max)))
         # Establishes the depth baseline for the rest of the run (gate, if it
         # ran, was at mission_depth) — runs regardless of run_gate/run_slalom.
         task_children.append(resilient(SubmergeToDepth(

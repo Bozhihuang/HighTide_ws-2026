@@ -88,22 +88,27 @@ class AlignWithGateHalf(py_trees.behaviour.Behaviour):
     this behavior and the pass-through happens after — here we only translate
     laterally so the sub crosses the gate through the correct half.
 
-    If the symbol isn't visible yet it strafes side-to-side (a lateral search,
-    still heading-locked) to bring it into frame instead of creeping forward.
-    Records which half the role symbol sits on into GATE_DIVIDER_SIDE (kept for
-    downstream logic). Succeeds once centered, or best-effort on timeout.
+    If the symbol isn't visible yet it strafes in ONE fixed direction
+    (search_side param — 'left' or 'right', whichever way the symbol is
+    expected to be) instead of creeping forward, until either the symbol
+    comes into frame (then it centers normally) or the timeout hits.
+    Records which half the role symbol sits on into GATE_DIVIDER_SIDE (kept
+    for downstream logic). Succeeds once centered, or best-effort on timeout.
     """
 
     def __init__(self, name='AlignWithGateHalf', timeout=20.0, center_tol=0.12,
-                 strafe_gain=2.0, strafe_max=0.4,
-                 search_amplitude=0.3, search_period=6.0):
+                 strafe_gain=2.0, strafe_max=0.15,
+                 search_side='right', search_speed=0.15):
         super().__init__(name)
         self.timeout = timeout
         self.center_tol = center_tol
         self.strafe_gain = strafe_gain
+        # Same slow cap for both phases — strafe slowly the whole way in,
+        # search or center, no fast snap once the symbol comes into frame.
         self.strafe_max = strafe_max
-        self.search_amplitude = search_amplitude
-        self.search_period = search_period
+        # + = strafe right, - = strafe left (same sign convention as the
+        # centering command below).
+        self.search_sway = search_speed if search_side == 'right' else -search_speed
         self.start_time = None
         self.side_recorded = False
         self._locked_heading = None
@@ -124,7 +129,6 @@ class AlignWithGateHalf(py_trees.behaviour.Behaviour):
 
     def update(self):
         import time
-        import math
         from hightide_interfaces.msg import ThrusterCommand
         node = self.blackboard.get(bb.ROS_NODE)
         role = self.blackboard.get(bb.CHOSEN_ROLE)
@@ -153,10 +157,9 @@ class AlignWithGateHalf(py_trees.behaviour.Behaviour):
         cmd.yaw = yaw_hold(node, self._locked_heading)  # hold heading throughout
 
         if target is None:
-            # Symbol not visible — strafe side-to-side (heading locked, NO
-            # forward motion) to sweep it into frame.
-            cmd.sway = self.search_amplitude * math.sin(
-                2 * math.pi * elapsed / self.search_period)
+            # Symbol not visible — strafe in one fixed direction (heading
+            # locked, NO forward motion) toward where it's expected.
+            cmd.sway = self.search_sway
             node.cmd_pub.publish(cmd)
             return py_trees.common.Status.RUNNING
 
@@ -313,7 +316,9 @@ class HeadingTurn(py_trees.behaviour.Behaviour):
 def create_gate_subtree(total_timeout=240.0,
                         approach_forward_m=1.5, passthrough_forward_m=2.5,
                         transit_speed=0.6, transit_kp=0.2, transit_ki=0.0,
-                        transit_kd=0.05) -> py_trees.behaviour.Behaviour:
+                        transit_kd=0.05, align_search_side='right',
+                        align_search_speed=0.15,
+                        align_strafe_max=0.15) -> py_trees.behaviour.Behaviour:
     """Build the Task 1 (Gate) behavior subtree.
 
     Flow: drive forward `approach_forward_m` (closed-loop ZED/PID, no vision
@@ -340,7 +345,10 @@ def create_gate_subtree(total_timeout=240.0,
                               speed=transit_speed, kp=transit_kp, ki=transit_ki,
                               kd=transit_kd),
             ConfirmGateRole('ConfirmRole', timeout=t['confirm']),
-            AlignWithGateHalf('AlignGate', timeout=t['align']),
+            AlignWithGateHalf('AlignGate', timeout=t['align'],
+                              search_side=align_search_side,
+                              search_speed=align_search_speed,
+                              strafe_max=align_strafe_max),
             # Then drive forward THROUGH the gate (closed-loop ZED/PID).
             DeadReckonTransit('PassThrough', forward_m=passthrough_forward_m,
                               speed=transit_speed, kp=transit_kp, ki=transit_ki,

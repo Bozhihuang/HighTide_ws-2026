@@ -38,6 +38,12 @@ mission_node:
     # role symbol -> drive forward gate_passthrough_forward_m through the gate.
     gate_approach_forward_m: 1.5
     gate_passthrough_forward_m: 2.5
+    # While centering on the role symbol, if it isn't visible yet, strafe this
+    # direction ('left'/'right') until it comes into frame. Both the search and
+    # the centering strafe use this same slow speed cap the whole way in.
+    gate_align_search_side: 'right'
+    gate_align_search_speed: 0.15
+    gate_align_strafe_max: 0.15
 
     # After the gate + 2x style spin, dive this much DEEPER for the dead-reckon
     # slalom legs and everything after.
