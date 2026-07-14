@@ -44,6 +44,7 @@ mission_node:
     gate_align_search_side: 'right'
     gate_align_search_speed: 0.15
     gate_align_strafe_max: 0.15
+    gate_style_spin_enabled: true     # do the 2x 360° style spin after the gate
     # Fixed deadlines (NOT scaled by any mission budget). If ConfirmRole never
     # sees the role symbol, or AlignGate never centers on it, within these,
     # each gives up best-effort and the gate task proceeds anyway.
@@ -61,6 +62,15 @@ mission_node:
     octagon_timeout_sec: 240.0
     return_home_timeout_sec: 240.0
 
+    # ---- Return Home (Task 6) ----
+    # Dive to return_home_depth_m, PID-yaw to (coin-flip start heading +
+    # return_home_heading_offset_deg — 180° faces back toward the gate), then
+    # drive straight return_home_forward_m holding that heading. Turn uses the
+    # heading_turn_* PID; the drive uses the transit_* PID + heading hold.
+    return_home_depth_m: 0.5
+    return_home_forward_m: 4.0
+    return_home_heading_offset_deg: 180.0
+
     # Octagon (Task 5) knobs — tune in-water without code edits. No vision for
     # entry: EnterOctagon is a plain closed-loop ZED/PID advance, same as every
     # other leg. After surfacing, slowly yaw to find and hold facing a role
@@ -69,11 +79,12 @@ mission_node:
     octagon_surge: 0.3
     octagon_settle_sec: 2.0
     octagon_surface_depth_m: 0.3
-    octagon_face_yaw_rate: 0.15       # slow scan rate while searching for an icon
+    octagon_face_yaw_rate: 0.08       # slow scan rate while searching for an icon
     octagon_face_turn_gain: 1.5       # fine-tune proportional gain once one's in view
     octagon_face_turn_max: 0.2        # fine-tune yaw cap
     octagon_face_center_tol: 0.1      # normalized frame-center tolerance to call it "facing"
     octagon_face_hold_sec: 3.0        # hold time facing it to bank the points
+    octagon_face_search_timeout_sec: 20.0  # stop scanning if NO icon seen within this
 
     # ---- Opening maneuver (right after submerge, before the tasks) ----
     # Turn a set amount, then advance. Uses the movement_mode below for the
@@ -131,6 +142,14 @@ mission_node:
     # >>> MEASURE ALL OF THESE IN THE POOL PER COURSE. <<<
     course: 'D'                       # 'A' or 'D'
 
+    # ---- Dead-reckon leg: gate exit -> slalom start ----
+    # Optional (forward, lateral) relocate between the gate task and the slalom
+    # maneuver. lateral +right. 0/0 = skipped (drops straight into the slalom).
+    to_slalom_A_leg_forward_m: 0.0
+    to_slalom_A_leg_lateral_m: 0.0
+    to_slalom_D_leg_forward_m: 0.0
+    to_slalom_D_leg_lateral_m: 0.0
+
     # ---- Dead-reckon slalom: yaw / forward / yaw / forward / yaw-back ----
     # NOT a diagonal (forward, lateral) hop — turn to a heading, drive forward
     # holding THAT heading, turn again (relative to the now-current heading),
@@ -174,6 +193,7 @@ rc_override_node:
     neutral_pwm: 1500
     deadzone: 0.05
     timeout_sec: 0.5              # Safety timeout — neutral after 500ms silence
+    hold_max_sec: 15.0           # auto-release RC-override hold if a holder (barrel roll) crashes
 
 depth_controller_node:
   ros__parameters:

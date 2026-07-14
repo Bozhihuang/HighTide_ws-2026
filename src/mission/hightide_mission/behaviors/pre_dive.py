@@ -104,16 +104,20 @@ class YawToRecordedHeading(py_trees.behaviour.Behaviour):
     gate-facing heading, undoing the coin-flip repositioning). heading_key
     lets other behaviors reuse this same PID-yaw-back for a different
     reference (e.g. bb.SLALOM_START_HEADING, to straighten out after the
-    slalom's yaw/forward zigzag). Uses the same closed-loop yaw PID and sign
-    convention as gate.HeadingTurn. Best-effort: succeeds immediately if no
-    heading was recorded, and on timeout, so a bad FOG can't stall the mission.
+    slalom's yaw/forward zigzag). offset_deg turns to `recorded + offset`
+    instead of exactly the recorded heading — e.g. Return Home targets
+    INITIAL_HEADING + 180° to face back toward the gate. Uses the same
+    closed-loop yaw PID and sign convention as gate.HeadingTurn. Best-effort:
+    succeeds immediately if no heading was recorded, and on timeout, so a bad
+    FOG can't stall the mission.
     """
 
     def __init__(self, name='YawToRecordedHeading', heading_key=None,
-                 tolerance_deg=3.0, timeout=20.0,
+                 offset_deg=0.0, tolerance_deg=3.0, timeout=20.0,
                  kp=0.225, ki=0.0, kd=0.2, output_limit=0.6):
         super().__init__(name)
         self.heading_key = heading_key or bb.INITIAL_HEADING
+        self.offset_deg = offset_deg
         self.tolerance_deg = tolerance_deg
         self.timeout = timeout
         self.kp, self.ki, self.kd = kp, ki, kd
@@ -128,7 +132,7 @@ class YawToRecordedHeading(py_trees.behaviour.Behaviour):
         self.blackboard.register_key(key=self.heading_key, access=py_trees.common.Access.READ)
 
     def initialise(self):
-        from hightide_navigation import PIDController
+        from hightide_navigation import PIDController, normalize_angle
         self.start_time = pytime.time()
         self.last_t = self.start_time
         # Same gains/clamp as gate.HeadingTurn (and yaw_controller_node's
@@ -139,16 +143,22 @@ class YawToRecordedHeading(py_trees.behaviour.Behaviour):
                                  output_min=-self.output_limit,
                                  output_max=self.output_limit)
         try:
-            self.target_heading = self.blackboard.get(self.heading_key)
+            recorded = self.blackboard.get(self.heading_key)
         except KeyError:
+            recorded = None
+        if recorded is None:
             self.target_heading = None
+        else:
+            self.target_heading = normalize_angle(
+                recorded + math.radians(self.offset_deg))
         node = self.blackboard.get(bb.ROS_NODE)
         if self.target_heading is None:
             node.get_logger().warn(
-                f'No recorded heading ({self.heading_key}) — skipping yaw-back')
+                f'No recorded heading ({self.heading_key}) — skipping yaw-to-heading')
         else:
             node.get_logger().info(
-                f'Yawing back to recorded heading {math.degrees(self.target_heading):.1f}°')
+                f'Yawing to {math.degrees(self.target_heading):.1f}° '
+                f'({self.heading_key} + {self.offset_deg:.0f}°)')
 
     def update(self):
         from hightide_navigation import normalize_angle

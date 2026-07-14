@@ -19,7 +19,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 from mavros_msgs.msg import OverrideRCIn
-from std_msgs.msg import Int32  
+from std_msgs.msg import Int32, Bool
 from hightide_interfaces.msg import ThrusterCommand
 
 
@@ -48,6 +48,10 @@ class RCOverrideNode(Node):
         self.declare_parameter('neutral_pwm', 1500)
         self.declare_parameter('deadzone', 0.05)
         self.declare_parameter('timeout_sec', 0.5)
+        # Safety cap: how long a hold can suppress our publishing before we
+        # auto-release, in case whoever set the hold (mode_manager's barrel
+        # roll) crashes without clearing it. The barrel roll is only ~3 s.
+        self.declare_parameter('hold_max_sec', 15.0)
 
         self.publish_rate = self.get_parameter('publish_rate').value
         self.max_pwm = self.get_parameter('max_pwm').value
@@ -55,6 +59,7 @@ class RCOverrideNode(Node):
         self.neutral_pwm = self.get_parameter('neutral_pwm').value
         self.deadzone = self.get_parameter('deadzone').value
         self.timeout_sec = self.get_parameter('timeout_sec').value
+        self.hold_max_sec = self.get_parameter('hold_max_sec').value
 
         self.pwm_scale = (self.max_pwm - self.neutral_pwm)  # 400
 
@@ -64,6 +69,13 @@ class RCOverrideNode(Node):
         self.depth_pwm = self.neutral_pwm  # From depth controller
         self.depth_pwm_received = False
 
+        # When another node needs exclusive RC-override control (the barrel
+        # roll fires the roll channel directly and can't share this topic with
+        # us — we'd stomp it back to neutral every tick), it publishes True on
+        # /hightide/rc_override_hold and we stop publishing until it clears it.
+        self.hold = False
+        self.hold_start = None
+
         # Subscribers
         self.cmd_sub = self.create_subscription(
             ThrusterCommand, '/hightide/cmd_vel',
@@ -72,6 +84,10 @@ class RCOverrideNode(Node):
         self.depth_pwm_sub = self.create_subscription(
             Int32, '/hightide/depth_pwm',
             self._depth_pwm_callback, 10)
+
+        self.hold_sub = self.create_subscription(
+            Bool, '/hightide/rc_override_hold',
+            self._hold_callback, 10)
 
         # Publisher — MAVROS RC Override
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
@@ -95,6 +111,15 @@ class RCOverrideNode(Node):
         self.depth_pwm = msg.data
         self.depth_pwm_received = True
 
+    def _hold_callback(self, msg: Bool):
+        """Yield the RC-override topic to another node (e.g. the barrel roll)."""
+        if msg.data and not self.hold:
+            self.hold_start = self.get_clock().now()
+            self.get_logger().info('RC override HELD — yielding topic (barrel roll?)')
+        elif not msg.data and self.hold:
+            self.get_logger().info('RC override released — resuming control')
+        self.hold = msg.data
+
     def _normalize_to_pwm(self, value: float) -> int:
         """Convert normalized [-1.0, 1.0] value to PWM [min_pwm, max_pwm]."""
         if abs(value) < self.deadzone:
@@ -106,6 +131,19 @@ class RCOverrideNode(Node):
     def _publish_rc_override(self):
         """Publish RC Override message at fixed rate."""
         now = self.get_clock().now()
+
+        # Held: another node owns the RC-override topic right now (barrel roll).
+        # Stay silent so we don't fight it — but auto-release after hold_max_sec
+        # so a crashed holder can't leave the vehicle uncommandable.
+        if self.hold:
+            if self.hold_start is not None and \
+                    (now - self.hold_start).nanoseconds / 1e9 > self.hold_max_sec:
+                self.get_logger().warn(
+                    f'RC override hold exceeded {self.hold_max_sec}s — force-releasing')
+                self.hold = False
+            else:
+                return
+
         dt = (now - self.last_cmd_time).nanoseconds / 1e9
 
         # Safety: if no command received within timeout, send neutral

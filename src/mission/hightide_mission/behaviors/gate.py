@@ -320,52 +320,58 @@ def create_gate_subtree(confirm_timeout=15.0, align_timeout=30.0,
                         approach_forward_m=1.5, passthrough_forward_m=2.5,
                         transit_speed=0.6, transit_kp=0.2, transit_ki=0.0,
                         transit_kd=0.05, align_search_side='right',
-                        align_search_speed=0.15,
-                        align_strafe_max=0.15) -> py_trees.behaviour.Behaviour:
+                        align_search_speed=0.15, align_strafe_max=0.15,
+                        style_spin_enabled=True) -> py_trees.behaviour.Behaviour:
     """Build the Task 1 (Gate) behavior subtree.
 
     Flow: drive forward `approach_forward_m` (closed-loop ZED/PID, no vision
     check first) → confirm the role symbol is visible → strafe until it's
     centered → drive forward `passthrough_forward_m` through the gate →
-    record pose → 2x style yaw spin.
+    record pose → (if style_spin_enabled) 2x 360° style yaw spin.
 
     confirm_timeout/align_timeout are fixed deadlines (NOT scaled against a
     total mission budget) — if AlignGate hasn't centered on the symbol within
     align_timeout (30s default), it gives up best-effort and proceeds straight
     to PassThrough anyway. The approach/pass-through forward distances are
     closed-loop ZED-odometry legs (same PID transit as the inter-task legs).
+    style_spin_enabled toggles the post-gate 2x 360° style spin on/off.
     """
-    return py_trees.composites.Sequence(
-        name='Task1_Gate',
-        memory=True,
-        children=[
-            LogBehavior('Gate_Start', 'Starting Task 1: Gate'),
-            # Drive forward blind (closed-loop ZED/PID, heading held) — no
-            # "is the gate already in frame" check first.
-            DeadReckonTransit('ApproachGate', forward_m=approach_forward_m,
-                              speed=transit_speed, kp=transit_kp, ki=transit_ki,
-                              kd=transit_kd),
-            ConfirmGateRole('ConfirmRole', timeout=confirm_timeout),
-            AlignWithGateHalf('AlignGate', timeout=align_timeout,
-                              search_side=align_search_side,
-                              search_speed=align_search_speed,
-                              strafe_max=align_strafe_max),
-            # Then drive forward THROUGH the gate (closed-loop ZED/PID).
-            DeadReckonTransit('PassThrough', forward_m=passthrough_forward_m,
-                              speed=transit_speed, kp=transit_kp, ki=transit_ki,
-                              kd=transit_kd),
-            StopMotion('StopAfterGate'),
-            # Remember the pose just PAST the gate (odometry) so Return Home
-            # can dead-reckon back to the far side of the gate and cross it
-            # once, camera-first — we have no pinger to home on. Recording
-            # before the gate (the old placement) made return-home target the
-            # start box, forcing a blind reverse crossing.
-            RecordPose('RecordGatePose', bb.GATE_POSITION),
+    children = [
+        LogBehavior('Gate_Start', 'Starting Task 1: Gate'),
+        # Drive forward blind (closed-loop ZED/PID, heading held) — no
+        # "is the gate already in frame" check first.
+        DeadReckonTransit('ApproachGate', forward_m=approach_forward_m,
+                          speed=transit_speed, kp=transit_kp, ki=transit_ki,
+                          kd=transit_kd),
+        ConfirmGateRole('ConfirmRole', timeout=confirm_timeout),
+        AlignWithGateHalf('AlignGate', timeout=align_timeout,
+                          search_side=align_search_side,
+                          search_speed=align_search_speed,
+                          strafe_max=align_strafe_max),
+        # Then drive forward THROUGH the gate (closed-loop ZED/PID).
+        DeadReckonTransit('PassThrough', forward_m=passthrough_forward_m,
+                          speed=transit_speed, kp=transit_kp, ki=transit_ki,
+                          kd=transit_kd),
+        StopMotion('StopAfterGate'),
+        # Remember the pose just PAST the gate (odometry) so Return Home
+        # can dead-reckon back to the far side of the gate and cross it
+        # once, camera-first — we have no pinger to home on. Recording
+        # before the gate (the old placement) made return-home target the
+        # start box, forcing a blind reverse crossing.
+        RecordPose('RecordGatePose', bb.GATE_POSITION),
+    ]
+    if style_spin_enabled:
+        children += [
             # Double 360° yaw spin for style — heading-safe (FOG returns to
             # start). Count is set by yaw_controller_node's spin_count param.
             LogBehavior('Gate_StyleSpin', 'Executing 2x style yaw spin'),
             CallTriggerService('YawSpinStyle', '/hightide/yaw_spin'),
             StopMotion('StopAfterSpin'),
-            LogBehavior('Gate_Done', 'Task 1 Gate COMPLETE'),
-        ],
+        ]
+    children.append(LogBehavior('Gate_Done', 'Task 1 Gate COMPLETE'))
+
+    return py_trees.composites.Sequence(
+        name='Task1_Gate',
+        memory=True,
+        children=children,
     )

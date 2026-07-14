@@ -6,6 +6,7 @@ from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from std_srvs.srv import SetBool, Trigger
+from std_msgs.msg import Bool
 from mavros_msgs.msg import State, OverrideRCIn
 from mavros_msgs.srv import CommandBool, SetMode
 
@@ -57,8 +58,19 @@ class ModeManagerNode(Node):
 
         # RC Override publisher (for barrel roll)
         self.rc_pub = self.create_publisher(
-            OverrideRCIn, 
-            '/mavros/rc/override', 
+            OverrideRCIn,
+            '/mavros/rc/override',
+            10,
+            callback_group=self.callback_group
+        )
+
+        # Tells rc_override_node to stop publishing to /mavros/rc/override so
+        # the barrel roll has exclusive control of that topic (otherwise
+        # rc_override_node's 20 Hz neutral commands fight the roll and it
+        # barely moves).
+        self.rc_hold_pub = self.create_publisher(
+            Bool,
+            '/hightide/rc_override_hold',
             10,
             callback_group=self.callback_group
         )
@@ -245,8 +257,19 @@ class ModeManagerNode(Node):
         self.get_logger().warn('=== BARREL ROLL INITIATED ===')
         self.get_logger().warn('FOG heading will be lost after this maneuver!')
 
+        # Take exclusive control of /mavros/rc/override so rc_override_node
+        # stops publishing neutral over our roll command. Publish a few times
+        # so the flag isn't missed, then keep it held for the whole maneuver.
+        hold_on = Bool()
+        hold_on.data = True
+        for _ in range(5):
+            self.rc_hold_pub.publish(hold_on)
+            time.sleep(0.02)
+
         # Switch to Manual mode
         if not self._call_set_mode('MANUAL'):
+            # Release the hold before bailing so we don't strand the vehicle.
+            self._release_rc_hold()
             response.success = False
             response.message = 'Failed to switch to Manual mode'
             return response
@@ -254,8 +277,8 @@ class ModeManagerNode(Node):
         # Brief pause to let mode change take effect on physical vehicle
         time.sleep(0.5)
 
-        # Command barrel roll: opposite roll command via RC Override
-        # Channel 2 (Roll): full deflection
+        # Command barrel roll: roll command via RC Override.
+        # Channel 2 (idx 1, Roll): full deflection.
         roll_msg = OverrideRCIn()
         roll_channels = [1500] * 18
         roll_channels[1] = self.barrel_roll_pwm  # Full roll
@@ -272,6 +295,9 @@ class ModeManagerNode(Node):
 
         for _ in range(iterations):
             self.rc_pub.publish(roll_msg)
+            # Refresh the hold so rc_override_node's safety auto-release can't
+            # kick in mid-roll on a long maneuver.
+            self.rc_hold_pub.publish(hold_on)
             time.sleep(publish_period)
 
         # Stop motors
@@ -279,11 +305,22 @@ class ModeManagerNode(Node):
         stop_msg.channels = [1500] * 18
         self.rc_pub.publish(stop_msg)
 
+        # Hand the topic back to rc_override_node.
+        self._release_rc_hold()
+
         self.get_logger().info('Barrel roll complete — motors stopped')
 
         response.success = True
         response.message = 'Barrel roll executed successfully'
         return response
+
+    def _release_rc_hold(self):
+        """Release exclusive RC-override control back to rc_override_node."""
+        hold_off = Bool()
+        hold_off.data = False
+        for _ in range(5):
+            self.rc_hold_pub.publish(hold_off)
+            time.sleep(0.02)
 
 
 def main(args=None):

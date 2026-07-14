@@ -113,6 +113,15 @@ class MissionNode(Node):
         self.declare_parameter('octagon_timeout_sec', 240.0)
         self.declare_parameter('return_home_timeout_sec', 240.0)
 
+        # ---- Return Home (Task 6) ----
+        # Dive to return_home_depth_m, PID-yaw to (INITIAL_HEADING +
+        # return_home_heading_offset_deg — the coin-flip start heading + 180°,
+        # facing back toward the gate), then drive straight return_home_forward_m
+        # holding that heading. Turn uses heading_turn_* gains, drive uses transit_*.
+        self.declare_parameter('return_home_depth_m', 0.5)
+        self.declare_parameter('return_home_forward_m', 4.0)
+        self.declare_parameter('return_home_heading_offset_deg', 180.0)
+
         # ---- Gate approach/pass-through (closed-loop ZED/PID forward legs) ----
         # After finding the gate, drive forward this far, THEN strafe to center
         # the role symbol, THEN drive forward this far through the gate.
@@ -131,6 +140,8 @@ class MissionNode(Node):
         self.declare_parameter('gate_align_search_side', 'right')
         self.declare_parameter('gate_align_search_speed', 0.15)
         self.declare_parameter('gate_align_strafe_max', 0.15)
+        # Toggle the post-gate 2x 360° style yaw spin on/off.
+        self.declare_parameter('gate_style_spin_enabled', True)
 
         # ---- Extra depth for the slalom-and-beyond leg ----
         # After the gate + style spin, dive this much DEEPER before running the
@@ -146,11 +157,12 @@ class MissionNode(Node):
         self.declare_parameter('octagon_surface_depth_m', 0.3)     # "at surface" threshold
         # After surfacing: slowly yaw to find and hold facing a role icon
         # for the facing bonus (see octagon.FaceOctagonImage).
-        self.declare_parameter('octagon_face_yaw_rate', 0.15)      # slow scan rate
+        self.declare_parameter('octagon_face_yaw_rate', 0.08)      # slow scan rate
         self.declare_parameter('octagon_face_turn_gain', 1.5)      # fine-tune proportional gain
         self.declare_parameter('octagon_face_turn_max', 0.2)       # fine-tune yaw cap
         self.declare_parameter('octagon_face_center_tol', 0.1)     # normalized frame-center tolerance
         self.declare_parameter('octagon_face_hold_sec', 3.0)       # hold time to bank the points
+        self.declare_parameter('octagon_face_search_timeout_sec', 20.0)  # give up scan if no icon seen
 
         # ---- Course selection + inter-mission dead-reckon transits ----
         # Courses A and D are DIFFERENT layouts (not mirror images), so each has
@@ -201,7 +213,7 @@ class MissionNode(Node):
         # slalom legs below). Metres; lateral is +right. 0.0 = no transit.
         # >>> MEASURE PER COURSE IN POOL. <<<
         for course in ('A', 'D'):
-            for leg in ('torpedo', 'octagon'):
+            for leg in ('to_slalom', 'torpedo', 'octagon'):
                 self.declare_parameter(f'{leg}_{course}_leg_forward_m', 0.0)
                 self.declare_parameter(f'{leg}_{course}_leg_lateral_m', 0.0)
 
@@ -256,12 +268,17 @@ class MissionNode(Node):
         self.gate_align_strafe_max = float(self.get_parameter('gate_align_strafe_max').value)
         self.gate_confirm_timeout = float(self.get_parameter('gate_confirm_timeout_sec').value)
         self.gate_align_timeout = float(self.get_parameter('gate_align_timeout_sec').value)
+        self.gate_style_spin_enabled = bool(self.get_parameter('gate_style_spin_enabled').value)
         self.slalom_extra_depth_m = float(self.get_parameter('slalom_extra_depth_m').value)
 
         # Per-mission budgets
         self.torpedoes_timeout = self.get_parameter('torpedoes_timeout_sec').value
         self.octagon_timeout = self.get_parameter('octagon_timeout_sec').value
         self.return_home_timeout = self.get_parameter('return_home_timeout_sec').value
+        self.return_home_depth_m = float(self.get_parameter('return_home_depth_m').value)
+        self.return_home_forward_m = float(self.get_parameter('return_home_forward_m').value)
+        self.return_home_heading_offset_deg = float(
+            self.get_parameter('return_home_heading_offset_deg').value)
 
         # Opening maneuver
         self.initial_turn_deg = float(self.get_parameter('initial_turn_deg').value)
@@ -303,6 +320,7 @@ class MissionNode(Node):
             face_turn_max=self.get_parameter('octagon_face_turn_max').value,
             face_center_tol=self.get_parameter('octagon_face_center_tol').value,
             face_hold_sec=self.get_parameter('octagon_face_hold_sec').value,
+            face_search_timeout=self.get_parameter('octagon_face_search_timeout_sec').value,
         )
 
         # Publishers
@@ -566,12 +584,16 @@ class MissionNode(Node):
                 transit_kd=self.transit_kd,
                 align_search_side=self.gate_align_search_side,
                 align_search_speed=self.gate_align_search_speed,
-                align_strafe_max=self.gate_align_strafe_max)))
+                align_strafe_max=self.gate_align_strafe_max,
+                style_spin_enabled=self.gate_style_spin_enabled)))
         # Establishes the depth baseline for the rest of the run (gate, if it
         # ran, was at mission_depth) — runs regardless of run_gate/run_slalom.
         task_children.append(resilient(SubmergeToDepth(
             'DeeperForSlalom',
             depth_m=self.mission_depth + self.slalom_extra_depth_m)))
+        # Optional dead-reckon relocate from the gate exit into the slalom
+        # start (forward + lateral m from params, 0/0 = skipped).
+        task_children.append(deadreckon_leg('Transit_Slalom', f'to_slalom_{self.course}_leg'))
         if self.run_slalom:
             # Dead-reckon slalom legs (ZED/PID). No bins task.
             task_children.extend(slalom_legs)
@@ -586,9 +608,21 @@ class MissionNode(Node):
                 transit_kp=self.transit_kp, transit_ki=self.transit_ki,
                 transit_kd=self.transit_kd)))
         if self.run_return_home:
-            # Octagon → gate is handled by Return Home's own dead-reckon.
-            task_children.append(resilient(
-                create_return_home_subtree(total_timeout=self.return_home_timeout)))
+            # Dive, PID-yaw to the coin-flip start heading + 180° (facing back
+            # toward the gate), then drive straight home holding that heading.
+            task_children.append(resilient(create_return_home_subtree(
+                depth_m=self.return_home_depth_m,
+                forward_m=self.return_home_forward_m,
+                heading_offset_deg=self.return_home_heading_offset_deg,
+                turn_tolerance_deg=self.slalom_turn_tolerance_deg,
+                turn_timeout=self.slalom_turn_timeout,
+                drive_timeout=self.return_home_timeout,
+                transit_speed=self.transit_thrust,
+                transit_kp=self.transit_kp, transit_ki=self.transit_ki,
+                transit_kd=self.transit_kd,
+                turn_kp=self.heading_turn_kp, turn_ki=self.heading_turn_ki,
+                turn_kd=self.heading_turn_kd,
+                turn_output_limit=self.heading_turn_output_limit)))
 
         tasks = py_trees.composites.Sequence(
             name='CompetitionTasks',

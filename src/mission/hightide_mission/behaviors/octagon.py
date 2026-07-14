@@ -13,13 +13,11 @@ same as every other inter-task leg this mission. EnterOctagon is one more
 closed-loop ZED/PID forward advance (DeadReckonTransit, advance_distance_m)
 into the interior, then settle and surface.
 
-Facing bonus: the ffc model has no dedicated "octagon image" class, so this
-reuses the same role-icon classes already used at the gate/torpedo board —
-compass/hammer_and_wrench/fire for survey_repair, sos/blood for search_rescue.
-Facing ANY of them is worth something; facing the one matching our chosen role
-is worth the max. FaceOctagonImage slowly yaws in place, tracking whichever
-icon is currently the best candidate (role match preferred), and once one is
-centered in frame it stops and holds facing it for hold_sec to bank the points.
+Facing bonus: FaceOctagonImage looks specifically for OUR chosen role's
+symbols (compass/hammer_and_wrench/fire for survey_repair, sos/blood for
+search_rescue) — the correct-icon match that scores the maximum. It slowly
+yaws in place scanning for one of those, and once it's centered in frame,
+stops and holds facing it for hold_sec to bank the points.
 """
 
 import py_trees
@@ -27,9 +25,7 @@ from .common import (WaitForDuration, LogBehavior, StopMotion,
                      DeadReckonTransit, distribute_timeout, detection_size)
 from . import blackboard_keys as bb
 
-# Any of these hanging images is worth SOME facing points.
-ANY_ICON_CLASSES = {'compass', 'hammer_and_wrench', 'fire', 'sos', 'blood'}
-# The subset matching our chosen role is worth the MAX facing points.
+# The symbols hung on the octagon for each role — we face OUR chosen role's.
 ROLE_ICON_CLASSES = {
     'survey_repair': {'compass', 'hammer_and_wrench', 'fire'},
     'search_rescue': {'sos', 'blood'},
@@ -83,19 +79,19 @@ class SurfaceInOctagon(py_trees.behaviour.Behaviour):
 
 class FaceOctagonImage(py_trees.behaviour.Behaviour):
     """
-    After surfacing, slowly yaw in place scanning for the role-icon images
-    hanging around the octagon. Tracks the BEST candidate each tick — a
-    role-matching icon always beats a non-matching one — and once it's
-    centered in frame, stops and holds facing it for hold_sec (3s) to bank
-    the points, fine-tuning with small yaw corrections to stay centered.
+    After surfacing, slowly yaw in place scanning ONLY for our chosen role's
+    symbols hanging on the octagon (the correct-icon match worth max points).
+    Once one is centered in frame, stops and holds facing it for hold_sec (3s)
+    to bank the points, fine-tuning with small yaw corrections to stay centered.
 
-    Best-effort: if nothing is ever centered within timeout, gives up and
-    proceeds anyway — a missed facing bonus never stalls the mission.
+    Best-effort: if no role symbol is seen within search_timeout it stops
+    scanning, and if one is never centered within `timeout` it gives up — a
+    missed facing bonus never stalls the mission.
     """
 
-    def __init__(self, name='FaceOctagonImage', yaw_rate=0.15, turn_gain=1.5,
+    def __init__(self, name='FaceOctagonImage', yaw_rate=0.08, turn_gain=1.5,
                  turn_max=0.2, center_tol=0.1, confidence=0.4,
-                 hold_sec=3.0, timeout=60.0):
+                 hold_sec=3.0, search_timeout=20.0, timeout=60.0):
         super().__init__(name)
         self.yaw_rate = yaw_rate
         self.turn_gain = turn_gain
@@ -103,9 +99,14 @@ class FaceOctagonImage(py_trees.behaviour.Behaviour):
         self.center_tol = center_tol
         self.confidence = confidence
         self.hold_sec = hold_sec
+        # If NO icon is ever seen within search_timeout, give up scanning and
+        # stop (best-effort). Once one has been seen, this no longer applies and
+        # only the overall `timeout` bounds the align/hold.
+        self.search_timeout = search_timeout
         self.timeout = timeout
         self.start_time = None
         self.held_since = None
+        self.ever_seen = False
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.CHOSEN_ROLE, access=py_trees.common.Access.READ)
@@ -115,32 +116,30 @@ class FaceOctagonImage(py_trees.behaviour.Behaviour):
         import time
         self.start_time = time.time()
         self.held_since = None
+        self.ever_seen = False
 
-    def _best_candidate(self, detections, correct_classes):
-        """(det, is_correct) for the best icon in view, or (None, False).
-        A role-matching icon always outranks a non-matching one; ties within
-        a rank go to the larger (closer/more centered) detection."""
-        best, best_correct = None, False
+    def _best_candidate(self, detections, target_classes):
+        """Largest in-view detection of one of our chosen role's symbols, or
+        None. Size (mask area, else bbox) picks the closest/most centered when
+        several are visible."""
+        best = None
         if not detections:
-            return None, False
+            return None
         for det in detections.detections:
             if det.confidence <= self.confidence:
                 continue
-            is_any = det.class_name in ANY_ICON_CLASSES
-            is_correct = det.class_name in correct_classes
-            if not is_any:
+            if det.class_name not in target_classes:
                 continue
-            if best is None or (is_correct and not best_correct) or (
-                    is_correct == best_correct and detection_size(det) > detection_size(best)):
-                best, best_correct = det, is_correct
-        return best, best_correct
+            if best is None or detection_size(det) > detection_size(best):
+                best = det
+        return best
 
     def update(self):
         import time
         from hightide_interfaces.msg import ThrusterCommand
         node = self.blackboard.get(bb.ROS_NODE)
         role = self.blackboard.get(bb.CHOSEN_ROLE)
-        correct_classes = ROLE_ICON_CLASSES.get(role, set())
+        target_classes = ROLE_ICON_CLASSES.get(role, set())
 
         if (time.time() - self.start_time) > self.timeout:
             node.cmd_pub.publish(ThrusterCommand())
@@ -152,17 +151,27 @@ class FaceOctagonImage(py_trees.behaviour.Behaviour):
         except KeyError:
             detections = None
 
-        target, is_correct = self._best_candidate(detections, correct_classes)
+        target = self._best_candidate(detections, target_classes)
 
         cmd = ThrusterCommand()
         cmd.header.stamp = node.get_clock().now().to_msg()
 
         if target is None:
-            # Nothing in view — keep slowly rotating to scan for one.
+            # Never saw our role symbol within the search window — stop scanning.
+            if not self.ever_seen and \
+                    (time.time() - self.start_time) > self.search_timeout:
+                node.cmd_pub.publish(ThrusterCommand())
+                node.get_logger().warn(
+                    f'No {role} symbol detected within {self.search_timeout:.0f}s '
+                    '— stopping search')
+                return py_trees.common.Status.SUCCESS
+            # Otherwise keep slowly rotating to scan for one.
             self.held_since = None
             cmd.yaw = self.yaw_rate
             node.cmd_pub.publish(cmd)
             return py_trees.common.Status.RUNNING
+
+        self.ever_seen = True
 
         img_w = detections.image_width or 1280
         lateral_error = (target.center_x / img_w) - 0.5
@@ -174,8 +183,8 @@ class FaceOctagonImage(py_trees.behaviour.Behaviour):
             if self.held_since is None:
                 self.held_since = time.time()
                 node.get_logger().info(
-                    f'Facing {"CORRECT" if is_correct else "an"} icon '
-                    f'({target.class_name}) — holding {self.hold_sec:.0f}s')
+                    f'Facing {role} symbol ({target.class_name}) — '
+                    f'holding {self.hold_sec:.0f}s')
             elif (time.time() - self.held_since) >= self.hold_sec:
                 node.cmd_pub.publish(ThrusterCommand())
                 node.get_logger().info(
@@ -194,9 +203,9 @@ class FaceOctagonImage(py_trees.behaviour.Behaviour):
 def create_octagon_subtree(total_timeout=240.0, advance_distance_m=3.0,
                            surge=0.3, settle_sec=2.0, surface_depth_m=0.3,
                            transit_kp=0.2, transit_ki=0.0, transit_kd=0.05,
-                           face_yaw_rate=0.15, face_turn_gain=1.5,
+                           face_yaw_rate=0.08, face_turn_gain=1.5,
                            face_turn_max=0.2, face_center_tol=0.1,
-                           face_hold_sec=3.0
+                           face_hold_sec=3.0, face_search_timeout=20.0
                            ) -> py_trees.behaviour.Behaviour:
     """Build the Task 5 (Octagon) behavior subtree — surface, then face an image.
 
@@ -223,6 +232,7 @@ def create_octagon_subtree(total_timeout=240.0, advance_distance_m=3.0,
             FaceOctagonImage('FaceImage', yaw_rate=face_yaw_rate,
                              turn_gain=face_turn_gain, turn_max=face_turn_max,
                              center_tol=face_center_tol, hold_sec=face_hold_sec,
+                             search_timeout=face_search_timeout,
                              timeout=t['face']),
             LogBehavior('Oct_Done', 'Task 5 Octagon COMPLETE'),
         ],
