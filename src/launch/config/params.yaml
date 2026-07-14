@@ -114,41 +114,20 @@ mission_node:
     transit_ki: 0.0                  # <<< REPLACE with your tuned pidtest surge ki
     transit_kd: 0.05                 # <<< REPLACE with your tuned pidtest surge kd
 
-    # ---- Course + inter-mission dead-reckon transits ----
+    # ---- Course + fully dead-reckoned (ZED/PID) inter-task legs ----
     # Courses A and D are DIFFERENT layouts. Fill in BOTH sets; `course` picks
-    # which one runs. Blind-drive a body-frame (forward, lateral) offset on ZED
-    # odometry between tasks, THEN the next task visually acquires. Metres;
-    # lateral +right. 0.0 = disabled (creep-and-search). >>> MEASURE IN POOL. <<<
+    # which one runs. EVERY leg below is the same primitive: a hardcoded
+    # body-frame (forward, lateral) hop, closed-loop PID on ZED odometry, NO
+    # vision hand-off — the whole course (gate exit -> torpedo -> octagon) is
+    # deadreckoned. Metres; lateral +right. 0.0 = that leg is skipped.
+    # >>> MEASURE ALL OF THESE IN THE POOL PER COURSE. <<<
     course: 'D'                       # 'A' or 'D'
 
-    # --- Course A distances ---
-    transit_A_to_slalom_forward_m: 0.0
-    transit_A_to_slalom_lateral_m: 0.0
-    transit_A_to_bins_forward_m: 0.0
-    transit_A_to_bins_lateral_m: 0.0
-    transit_A_to_torpedoes_forward_m: 0.0
-    transit_A_to_torpedoes_lateral_m: 0.0
-    transit_A_to_octagon_forward_m: 0.0
-    transit_A_to_octagon_lateral_m: 0.0
-
-    # --- Course D distances ---
-    transit_D_to_slalom_forward_m: 1.0
-    transit_D_to_slalom_lateral_m: 0.0
-    transit_D_to_bins_forward_m: 0.5
-    transit_D_to_bins_lateral_m: 2.5
-    transit_D_to_torpedoes_forward_m: 1.5
-    transit_D_to_torpedoes_lateral_m: -6.0
-    transit_D_to_octagon_forward_m: 0.0
-    transit_D_to_octagon_lateral_m: 0.0
-
-    # ---- Dead-reckon slalom legs (closed-loop ZED odometry / PID) ----
-    # After the gate, the slalom is navigated as a series of hardcoded body-frame
-    # (forward, lateral) hops — NO vision. lateral is +right. Legs left at 0/0
-    # are skipped, so fill in as many of the 4 slots as you need, in order.
-    # >>> MEASURE THESE IN THE POOL PER COURSE. <<<
-    # Example flow for course D: leg1 nudges past the gate exit, legs 2-4 weave
-    # the slalom; the forward+lateral to the torpedo board is the separate
-    # transit_D_to_torpedoes_* below-the-slalom leg, NOT counted here.
+    # ---- Dead-reckon slalom legs ----
+    # After the gate, the slalom is navigated as a series of hardcoded hops.
+    # Fill in as many of the 4 slots as you need, in order; leftover 0/0 slots
+    # are skipped. Example for course D: leg1 nudges past the gate exit,
+    # legs 2-4 would weave the slalom.
     # --- Course A slalom legs ---
     slalom_A_leg1_forward_m: 0.0
     slalom_A_leg1_lateral_m: 0.0
@@ -167,6 +146,18 @@ mission_node:
     slalom_D_leg3_lateral_m: 0.0
     slalom_D_leg4_forward_m: 0.0
     slalom_D_leg4_lateral_m: 0.0
+
+    # ---- Dead-reckon leg: slalom exit -> torpedo board ----
+    torpedo_A_leg_forward_m: 0.0
+    torpedo_A_leg_lateral_m: 0.0
+    torpedo_D_leg_forward_m: 1.5
+    torpedo_D_leg_lateral_m: -6.0
+
+    # ---- Dead-reckon leg: torpedo board -> octagon ----
+    octagon_A_leg_forward_m: 0.0
+    octagon_A_leg_lateral_m: 0.0
+    octagon_D_leg_forward_m: 0.0
+    octagon_D_leg_lateral_m: 0.0
 
 # ============== CONTROL ==============
 rc_override_node:

@@ -187,13 +187,14 @@ class MissionNode(Node):
 
         self.declare_parameter('course', 'A')                      # 'A' or 'D'
         # Props are far apart, so between tasks we blind-drive a fixed body-frame
-        # (forward, lateral) offset on ZED odometry, THEN let the next task's
-        # visual search acquire. Metres; lateral is +right. 0.0 = no transit
-        # (pure creep-and-search, the old behavior). MEASURE PER COURSE IN POOL.
+        # (forward, lateral) offset on ZED odometry — pure hardcoded dead reckon,
+        # NO vision hand-off (the whole course is deadreckoned on ZED, same as the
+        # slalom legs below). Metres; lateral is +right. 0.0 = no transit.
+        # >>> MEASURE PER COURSE IN POOL. <<<
         for course in ('A', 'D'):
-            for leg in ('to_slalom', 'to_bins', 'to_torpedoes', 'to_octagon'):
-                self.declare_parameter(f'transit_{course}_{leg}_forward_m', 0.0)
-                self.declare_parameter(f'transit_{course}_{leg}_lateral_m', 0.0)
+            for leg in ('torpedo', 'octagon'):
+                self.declare_parameter(f'{leg}_{course}_leg_forward_m', 0.0)
+                self.declare_parameter(f'{leg}_{course}_leg_lateral_m', 0.0)
 
         # Dead-reckon slalom: a series of hardcoded body-frame (forward, lateral)
         # hops that navigate the whole slalom on ZED odometry (closed-loop PID),
@@ -477,39 +478,23 @@ class MissionNode(Node):
             return py_trees.decorators.FailureIsSuccess(
                 name=f'Try_{subtree.name}', child=subtree)
 
-        # A blind dead-reckon leg to cross the open water into the NEXT prop's
-        # vicinity before that task's visual search runs. Distances come from
-        # ROS params (0.0 = disabled); course A/D mirrors the lateral sign.
-        # The prop class(es) that end each transit early — the moment the next
-        # task's target is in view, the transit bails and hands off to vision
-        # (the preset distance is only a ceiling). Class names per the ffc model.
-        transit_targets = {
-            'to_torpedoes': {'fire', 'blood'},
-            'to_octagon': {'buoy', 'octagon_table'},
-        }
-
-        def transit(name, leg):
-            fwd = self.get_parameter(f'transit_{self.course}_{leg}_forward_m').value
-            lat = self.get_parameter(f'transit_{self.course}_{leg}_lateral_m').value
-            return DeadReckonTransit(name, forward_m=fwd, lateral_m=lat,
-                                     speed=self.transit_thrust,
-                                     target_classes=transit_targets.get(leg),
-                                     kp=self.transit_kp, ki=self.transit_ki,
-                                     kd=self.transit_kd)
-
-        # The dead-reckon slalom: hardcoded body-frame (forward, lateral) legs
-        # driven closed-loop on ZED odometry (PID), NO vision hand-off — we
-        # navigate the whole slalom blind. Legs left at 0/0 succeed instantly
-        # (skipped), so only the filled-in ones move the sub.
-        def slalom_leg(i):
-            fwd = self.get_parameter(f'slalom_{self.course}_leg{i}_forward_m').value
-            lat = self.get_parameter(f'slalom_{self.course}_leg{i}_lateral_m').value
-            return DeadReckonTransit(f'SlalomLeg{i}', forward_m=fwd, lateral_m=lat,
+        # Every inter-task relocation is the SAME primitive: a hardcoded
+        # body-frame (forward, lateral) hop, closed-loop PID on ZED odometry,
+        # NO vision hand-off — the whole course is deadreckoned, gate to
+        # octagon. One helper builds all of them; only the param prefix and
+        # leg count differ. Legs left at 0/0 succeed instantly (skipped).
+        def deadreckon_leg(behavior_name, param_prefix):
+            fwd = self.get_parameter(f'{param_prefix}_forward_m').value
+            lat = self.get_parameter(f'{param_prefix}_lateral_m').value
+            return DeadReckonTransit(behavior_name, forward_m=fwd, lateral_m=lat,
                                      speed=self.transit_thrust,
                                      kp=self.transit_kp, ki=self.transit_ki,
                                      kd=self.transit_kd)
 
-        slalom_legs = [slalom_leg(i) for i in range(1, self.slalom_leg_count + 1)]
+        slalom_legs = [
+            deadreckon_leg(f'SlalomLeg{i}', f'slalom_{self.course}_leg{i}')
+            for i in range(1, self.slalom_leg_count + 1)
+        ]
 
         # Build the task list conditionally on the run_* toggles — a disabled
         # task is left OUT of the tree entirely (not ticked at all), but the
@@ -532,11 +517,11 @@ class MissionNode(Node):
         if self.run_slalom:
             # Dead-reckon slalom legs (ZED/PID). No bins task.
             task_children.extend(slalom_legs)
-        task_children.append(transit('Transit_Torpedoes', 'to_torpedoes'))
+        task_children.append(deadreckon_leg('Transit_Torpedoes', f'torpedo_{self.course}_leg'))
         if self.run_torpedoes:
             task_children.append(resilient(
                 create_torpedoes_subtree(total_timeout=self.torpedoes_timeout)))
-        task_children.append(transit('Transit_Octagon', 'to_octagon'))
+        task_children.append(deadreckon_leg('Transit_Octagon', f'octagon_{self.course}_leg'))
         if self.run_octagon:
             task_children.append(resilient(create_octagon_subtree(
                 total_timeout=self.octagon_timeout, **self.octagon_params)))
