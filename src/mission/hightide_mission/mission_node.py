@@ -138,12 +138,19 @@ class MissionNode(Node):
         self.declare_parameter('slalom_extra_depth_m', 0.5)
 
         # Octagon (Task 5) tuning knobs — surfaced so they can be tuned in-water
-        # via `ros2 param set` without editing code. No vision here — entry is a
+        # via `ros2 param set` without editing code. No vision for entry — it's a
         # plain deadreckon leg (octagon_{course}_leg_*), same as everything else.
         self.declare_parameter('octagon_advance_distance_m', 3.0)  # blind ZED/PID advance
         self.declare_parameter('octagon_surge', 0.3)
         self.declare_parameter('octagon_settle_sec', 2.0)          # fixed settle (not scaled)
         self.declare_parameter('octagon_surface_depth_m', 0.3)     # "at surface" threshold
+        # After surfacing: slowly yaw to find and hold facing a role icon
+        # for the facing bonus (see octagon.FaceOctagonImage).
+        self.declare_parameter('octagon_face_yaw_rate', 0.15)      # slow scan rate
+        self.declare_parameter('octagon_face_turn_gain', 1.5)      # fine-tune proportional gain
+        self.declare_parameter('octagon_face_turn_max', 0.2)       # fine-tune yaw cap
+        self.declare_parameter('octagon_face_center_tol', 0.1)     # normalized frame-center tolerance
+        self.declare_parameter('octagon_face_hold_sec', 3.0)       # hold time to bank the points
 
         # ---- Course selection + inter-mission dead-reckon transits ----
         # Courses A and D are DIFFERENT layouts (not mirror images), so each has
@@ -285,12 +292,17 @@ class MissionNode(Node):
             self.get_logger().warn(f"Unknown course '{self.course}' — defaulting to A")
             self.course = 'A'
 
-        # Octagon knobs (no vision — EnterOctagon is a plain deadreckon leg)
+        # Octagon knobs (no vision for entry — EnterOctagon is a plain deadreckon leg)
         self.octagon_params = dict(
             advance_distance_m=self.get_parameter('octagon_advance_distance_m').value,
             surge=self.get_parameter('octagon_surge').value,
             settle_sec=self.get_parameter('octagon_settle_sec').value,
             surface_depth_m=self.get_parameter('octagon_surface_depth_m').value,
+            face_yaw_rate=self.get_parameter('octagon_face_yaw_rate').value,
+            face_turn_gain=self.get_parameter('octagon_face_turn_gain').value,
+            face_turn_max=self.get_parameter('octagon_face_turn_max').value,
+            face_center_tol=self.get_parameter('octagon_face_center_tol').value,
+            face_hold_sec=self.get_parameter('octagon_face_hold_sec').value,
         )
 
         # Publishers

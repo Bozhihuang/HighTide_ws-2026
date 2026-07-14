@@ -61,12 +61,19 @@ mission_node:
     octagon_timeout_sec: 240.0
     return_home_timeout_sec: 240.0
 
-    # Octagon (Task 5) knobs — tune in-water without code edits. No vision:
-    # EnterOctagon is a plain closed-loop ZED/PID advance, same as every other leg.
+    # Octagon (Task 5) knobs — tune in-water without code edits. No vision for
+    # entry: EnterOctagon is a plain closed-loop ZED/PID advance, same as every
+    # other leg. After surfacing, slowly yaw to find and hold facing a role
+    # icon for the facing bonus (any icon = partial credit, role match = max).
     octagon_advance_distance_m: 3.0   # ZED/PID advance into the octagon interior
     octagon_surge: 0.3
     octagon_settle_sec: 2.0
     octagon_surface_depth_m: 0.3
+    octagon_face_yaw_rate: 0.15       # slow scan rate while searching for an icon
+    octagon_face_turn_gain: 1.5       # fine-tune proportional gain once one's in view
+    octagon_face_turn_max: 0.2        # fine-tune yaw cap
+    octagon_face_center_tol: 0.1      # normalized frame-center tolerance to call it "facing"
+    octagon_face_hold_sec: 3.0        # hold time facing it to bank the points
 
     # ---- Opening maneuver (right after submerge, before the tasks) ----
     # Turn a set amount, then advance. Uses the movement_mode below for the
