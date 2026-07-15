@@ -1,25 +1,10 @@
 #!/usr/bin/env python3
-"""
-Full system launch — EVERYTHING except MAVROS.
-
-MAVROS is deliberately NOT included here. Run it yourself, in its own
-terminal, before this launch, and leave it running:
-    ros2 launch mavros apm.launch fcu_url:=udp://192.168.2.1:14550@ \\
-        system_id:=1 config_yaml:=<path-to>/hightide_launch/config/mavros.yaml
-
-Why: MAVROS is a C++/rclcpp node and reinstalls its own SIGINT handler, so if
-it's Ctrl-C'd at the same instant as everything else here, its ROS context
-tears down within milliseconds — before mode_manager_node's disarm-on-Ctrl-C
-can reach it (everything to the FCU flows through MAVROS; a dead MAVROS means
-no possible disarm). Keeping MAVROS in a separate, un-signalled terminal is
-what lets Ctrl-C'ing THIS launch actually disarm the FCU and confirm it.
-"""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.substitutions import LaunchConfiguration
 from launch.conditions import IfCondition, UnlessCondition
-from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.launch_description_sources import PythonLaunchDescriptionSource, AnyLaunchDescriptionSource
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 from launch.actions import RegisterEventHandler, EmitEvent
@@ -48,17 +33,45 @@ def generate_launch_description():
     model_arg = DeclareLaunchArgument('yolo_model',
                                       default_value='/home/user/models/ffc_rs_26.pt',
                                       description='Path to YOLO model (.pt or Ultralytics .engine)')
+    
+    # Defaults the argument to your verified working tether connection parameter
+    fcu_url_arg = DeclareLaunchArgument('fcu_url',
+                                         default_value='udp://192.168.2.1:14550@',
+                                         description='FCU connection URL')
+    
+    system_id_arg = DeclareLaunchArgument('system_id',
+                                         default_value='1',
+                                         description='MAVROS system ID')
 
     # Resolve Launch Configurations
     sim = LaunchConfiguration('sim')
     run_mission = LaunchConfiguration('run_mission')
     yolo_model = LaunchConfiguration('yolo_model')
+    fcu_url = LaunchConfiguration('fcu_url')
+    system_id = LaunchConfiguration('system_id')
 
     # Locate Configuration File Paths
 
     global_config = os.path.join(
         get_package_share_directory('hightide_launch'),
         'config', 'params.yaml')
+        
+    mavros_config = os.path.join(
+        get_package_share_directory('hightide_launch'),
+        'config', 'mavros.yaml')
+
+    # ============== MAVROS ==============
+    mavros_launch = IncludeLaunchDescription(
+        AnyLaunchDescriptionSource([
+            os.path.join(get_package_share_directory('mavros'),
+                         'launch', 'apm.launch')
+        ]),
+        launch_arguments={
+            'fcu_url': fcu_url,
+            'system_id': system_id,
+            'config_yaml': mavros_config,
+        }.items(),
+    )
 
     # ============== ZED CAMERA ==============
     zed_launch = IncludeLaunchDescription(
@@ -205,7 +218,8 @@ def generate_launch_description():
         )
     )
     return LaunchDescription([
-        sim_arg, model_arg, run_mission_arg,
+        sim_arg, model_arg, fcu_url_arg, system_id_arg, run_mission_arg,
+        mavros_launch,
         zed_launch,
         rc_override,
         depth_controller,
