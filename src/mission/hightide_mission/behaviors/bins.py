@@ -11,7 +11,7 @@ import py_trees
 from .common import (WaitForDetection, WaitForAnyDetection, WaitForDuration,
                      LogBehavior, StopMotion, PublishDepthSetpoint,
                      SearchForDetection, lock_heading, yaw_hold,
-                     lock_track, sway_hold,
+                     lock_track, sway_hold, heading_error,
                      distribute_timeout, estimate_travel,
                      read_use_odometry, read_dead_reckon_mps)
 from . import blackboard_keys as bb
@@ -174,7 +174,8 @@ class NavigateOverBin(py_trees.behaviour.Behaviour):
         cmd.header.stamp = node.get_clock().now().to_msg()
         cmd.surge = self.surge
         cmd.yaw = yaw_hold(node, self._locked_heading)  # advance straight over the bin
-        cmd.sway = sway_hold(node, self.blackboard, self._locked_track)
+        cmd.sway = sway_hold(node, self.blackboard, self._locked_track,
+                             heading_err_rad=heading_error(node, self._locked_heading))
         node.cmd_pub.publish(cmd)
         return py_trees.common.Status.RUNNING
 

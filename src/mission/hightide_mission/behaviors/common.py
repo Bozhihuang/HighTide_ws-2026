@@ -211,7 +211,21 @@ def lock_track(node, blackboard):
     return (p.x, p.y, yaw)
 
 
-def sway_hold(node, blackboard, locked_track, kp=None, kd=None, limit=None):
+def heading_error(node, locked_heading):
+    """Signed heading error (rad) vs the locked heading, or None if unknown.
+    Tiny helper so sway_hold callers can pass their current yaw error without
+    each re-deriving the normalize_angle dance."""
+    if locked_heading is None:
+        return None
+    current = getattr(node, 'current_heading', None)
+    if current is None:
+        return None
+    from hightide_navigation import normalize_angle
+    return normalize_angle(locked_heading - current)
+
+
+def sway_hold(node, blackboard, locked_track, kp=None, kd=None, limit=None,
+              heading_err_rad=None):
     """PD sway command that drives the vehicle back onto `locked_track`.
 
     The sway-axis twin of yaw_hold(), and it exists for the same reason: pool
@@ -237,11 +251,25 @@ def sway_hold(node, blackboard, locked_track, kp=None, kd=None, limit=None):
     `sway_hold_limit` / `sway_hold_sign` / `sway_hold_deadband_m` params, all
     live-tunable in-water (`ros2 param set /mission_node sway_hold_kp 0.15`).
     Set sway_hold_enabled false to disable the whole thing mid-run.
+
+    YAW-SETTLED GATE: sway thrust is never yaw-neutral — lateral thrusters
+    don't push exactly through the center of drag (every sway command is also
+    a yaw torque yaw_hold must fight), and crabbing at forward speed adds a
+    Munk/weathervane moment on top. Straight-line travel is the mission's #1
+    priority, so when the caller passes its current heading error and that
+    error exceeds sway_hold_max_yaw_err_deg (default 8°), the trim goes to
+    ZERO: let yaw_hold settle the nose first, then trim the line. This also
+    keeps the correction geometrically honest — body-lateral is only
+    perpendicular to the track when the nose is actually on the track heading.
     """
     if locked_track is None:
         return 0.0
     if not bool(getattr(node, 'sway_hold_enabled', True)):
         return 0.0
+    if heading_err_rad is not None:
+        max_err = math.radians(float(getattr(node, 'sway_hold_max_yaw_err_deg', 8.0)))
+        if abs(heading_err_rad) > max_err:
+            return 0.0   # nose unsettled — no lateral trim until yaw_hold wins
     try:
         pose = blackboard.get(bb.CURRENT_POSE)
     except KeyError:
@@ -435,6 +463,7 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
         self._tick_n = 0
         self._cruise_v = []         # mps autocal: per-tick speed samples at saturation
         self._prev_s = None
+        self._last_yaw_err = None   # set each tick by _yaw_cmd, read by the sway gate
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.CURRENT_POSE, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.CURRENT_HEADING, access=py_trees.common.Access.READ)
@@ -667,8 +696,10 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
             cmd.surge = out
             # Cross-track held by the gentle, deadbanded sway_hold PD (NOT the
             # surge-strength position PID) — waves get trimmed out, the surge
-            # axis stays owned by the along-track law.
-            cmd.sway = sway_hold(node, self.blackboard, self._locked_track)
+            # axis stays owned by the along-track law. The heading error gates
+            # it: no lateral trim until the nose is settled on course.
+            cmd.sway = sway_hold(node, self.blackboard, self._locked_track,
+                                 heading_err_rad=self._last_yaw_err)
             # mps autocal sampling: per-tick speed while the PID is pinned at
             # the cap (the only moments the sub is actually driven AT the
             # thrust that dead_reckon_mps is defined for), with a sane-delta
@@ -701,14 +732,13 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
 
     def _yaw_cmd(self, node, dt):
         """pidtest's companion heading stabilizer, verbatim:
-        yaw_error = ref_yaw - imu_heading; cmd.yaw = sign * pid(yaw_error)."""
-        from hightide_navigation import normalize_angle
-        imu_now = getattr(node, 'current_heading', None)
-        if self._locked_heading is None or imu_now is None:
+        yaw_error = ref_yaw - imu_heading; cmd.yaw = sign * pid(yaw_error).
+        Also stashes the error so sway_hold's yaw-settled gate can see it."""
+        self._last_yaw_err = heading_error(node, self._locked_heading)
+        if self._last_yaw_err is None:
             return 0.0
-        yaw_err = normalize_angle(self._locked_heading - imu_now)
         y = (float(getattr(node, 'yaw_hold_sign', -1.0))
-             * self.companion_yaw_pid.compute(yaw_err, dt))
+             * self.companion_yaw_pid.compute(self._last_yaw_err, dt))
         lim = float(getattr(node, 'yaw_hold_limit', 1.0))
         return max(-lim, min(lim, y))
 

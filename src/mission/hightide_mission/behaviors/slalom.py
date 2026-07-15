@@ -16,7 +16,7 @@ import py_trees
 from .common import (WaitForDuration, LogBehavior, StopMotion,
                      SearchForDetection, DeadReckonTransit,
                      distribute_timeout, lock_heading, yaw_hold,
-                     lock_track, sway_hold)
+                     lock_track, sway_hold, heading_error)
 from . import blackboard_keys as bb
 
 
@@ -116,10 +116,12 @@ class SlalomPipe(py_trees.behaviour.Behaviour):
             # strafe trigger and surge leave room to react between first sight
             # and the pole.
             cmd.surge = self.approach_surge
-            # Hold the line while closing on the pipe. The strafe/recenter
+            # Hold the line while closing on the pipe (only once the nose is
+            # settled — the heading error gates the trim). The strafe/recenter
             # phases below command sway themselves and must keep sole authority
             # over that axis — the lateral hold would be fighting the dodge.
-            cmd.sway = sway_hold(node, self.blackboard, self._locked_track)
+            cmd.sway = sway_hold(node, self.blackboard, self._locked_track,
+                                 heading_err_rad=heading_error(node, self._locked_heading))
             if red_pole and 0 < red_pole.depth_m < self.strafe_trigger_m:
                 node.get_logger().info(
                     f'Pipe {self.pipe_number} at {red_pole.depth_m:.1f}m — strafing')
@@ -166,7 +168,8 @@ class SlalomPipe(py_trees.behaviour.Behaviour):
             # Surge past the pipe for a fixed time, holding the post-strafe line
             # (re-locked on entry) so waves can't push us back into the pipe.
             cmd.surge = 0.4
-            cmd.sway = sway_hold(node, self.blackboard, self._locked_track)
+            cmd.sway = sway_hold(node, self.blackboard, self._locked_track,
+                                 heading_err_rad=heading_error(node, self._locked_heading))
             node.cmd_pub.publish(cmd)
             if phase_elapsed > self.pass_duration:
                 self._enter_phase('recenter')

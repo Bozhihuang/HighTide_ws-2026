@@ -141,12 +141,26 @@ mission_node:
     # transit_thrust — this should nudge the sub back, never fight the surge.
     # Quick isolation test: sway_hold_enabled false restores the old
     # zero-sway behavior, so you can A/B whether the hold is helping.
-    sway_hold_enabled: true
+    # DISABLED by default (2026-07-15): sway thrust is never yaw-neutral —
+    # off-axis lateral thrusters twist the hull, and crabbing at forward speed
+    # adds a Munk moment — so the trim can degrade straight-line driving, and
+    # sway_hold_sign is still UNVERIFIED in water (a wrong sign is lateral
+    # positive feedback that looks exactly like "can't drive straight").
+    # Enable procedure, straight-line first:
+    #   1. Baseline with this false: verify pure surge + FOG yaw hold drives
+    #      straight (identical to pre-sway_hold behavior).
+    #   2. ros2 param set /mission_node sway_hold_enabled true — same line:
+    #      veers HARDER -> flip sway_hold_sign; wags -> lower kp / raise kd.
+    #   3. Sanity: LEG lines' sway_avg sign should OPPOSE the water's push.
+    # Even when enabled, the trim auto-suppresses while |heading error| >
+    # sway_hold_max_yaw_err_deg, so sway can never fight the yaw hold.
+    sway_hold_enabled: false
     sway_hold_kp: 0.2          # <<< TUNE IN POOL
     sway_hold_kd: 0.0         # <<< TUNE IN POOL
     sway_hold_limit: 0.2       # max lateral trim authority
     sway_hold_sign: 1.0        # flip to -1.0 if the correction pushes the wrong way
     sway_hold_deadband_m: 0.1  # ignore cross-track error under this (m)
+    sway_hold_max_yaw_err_deg: 8.0  # no lateral trim until the nose is within this of course
 
     # ---- ZED trust & dead-reckon consistency ----
     # odom_stale_sec: how old (or how long FROZEN — identical repeated poses

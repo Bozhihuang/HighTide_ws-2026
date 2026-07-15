@@ -207,6 +207,11 @@ class MissionNode(Node):
         self.declare_parameter('sway_hold_limit', 0.2)
         self.declare_parameter('sway_hold_sign', 1.0)
         self.declare_parameter('sway_hold_deadband_m', 0.1)
+        # Sway thrust is never yaw-neutral (off-axis lateral thrusters +
+        # Munk moment while crabbing at speed) — suppress the lateral trim
+        # whenever the heading error exceeds this, so sway can never fight
+        # yaw_hold. Driving a pure straight line outranks holding the line.
+        self.declare_parameter('sway_hold_max_yaw_err_deg', 8.0)
 
         # ---- ZED trust & dead-reckon consistency ----
         # odom_stale_sec: a ZED pose whose VALUE hasn't changed within this
@@ -335,6 +340,8 @@ class MissionNode(Node):
         self.sway_hold_limit = float(self.get_parameter('sway_hold_limit').value)
         self.sway_hold_sign = float(self.get_parameter('sway_hold_sign').value)
         self.sway_hold_deadband_m = float(self.get_parameter('sway_hold_deadband_m').value)
+        self.sway_hold_max_yaw_err_deg = float(
+            self.get_parameter('sway_hold_max_yaw_err_deg').value)
         self.odom_stale_sec = float(self.get_parameter('odom_stale_sec').value)
         self.intended_heading_max_dev_deg = float(
             self.get_parameter('intended_heading_max_dev_deg').value)
@@ -520,6 +527,7 @@ class MissionNode(Node):
                           'yaw_hold_limit', 'yaw_hold_sign',
                           'sway_hold_kp', 'sway_hold_kd', 'sway_hold_limit',
                           'sway_hold_sign', 'sway_hold_deadband_m',
+                          'sway_hold_max_yaw_err_deg',
                           'odom_stale_sec', 'intended_heading_max_dev_deg',
                           'mps_autocal_alpha'):
                 setattr(self, p.name, float(p.value))

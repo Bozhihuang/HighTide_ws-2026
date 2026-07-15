@@ -12,7 +12,7 @@ was on, surge through, then a heading-safe 2x 360° yaw spin for style points.
 import py_trees
 from .common import (CallTriggerService, LogBehavior, StopMotion, RecordPose,
                      DeadReckonTransit, lock_heading, yaw_hold,
-                     lock_track, sway_hold)
+                     lock_track, sway_hold, heading_error)
 from . import blackboard_keys as bb
 
 
@@ -227,7 +227,10 @@ class SurgeThrough(py_trees.behaviour.Behaviour):
         cmd.header.stamp = node.get_clock().now().to_msg()
         cmd.surge = self.speed
         cmd.yaw = yaw_hold(node, self._locked_heading)   # drive straight, hold heading
-        cmd.sway = sway_hold(node, self.blackboard, self._locked_track)  # ...and hold the line
+        # Hold the line too — but only while the nose is settled (the heading
+        # error gates the trim so sway torque never fights the yaw hold).
+        cmd.sway = sway_hold(node, self.blackboard, self._locked_track,
+                             heading_err_rad=heading_error(node, self._locked_heading))
         node.cmd_pub.publish(cmd)
         return py_trees.common.Status.RUNNING
 
