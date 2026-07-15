@@ -23,6 +23,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/DropMarker.srv"
   "srv/SetDepth.srv"
   "srv/SetNavigationTier.srv"
+  "srv/RotateToHeading.srv"
   "action/NavigateToWaypoint.action"
   "action/ExecuteTask.action"
   DEPENDENCIES std_msgs geometry_msgs sensor_msgs builtin_interfaces action_msgs

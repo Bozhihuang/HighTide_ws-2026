@@ -47,7 +47,8 @@ from hightide_interfaces.msg import (
 from hightide_mission.behaviors import blackboard_keys as bb
 from hightide_mission.behaviors.pre_dive import (
     ArmVehicle, SetAltHoldMode, SubmergeToDepth, WaitForStable,
-    RecordInitialHeading, CoinFlipCountdown, YawToRecordedHeading)
+    RecordInitialHeading, CoinFlipCountdown, YawToRecordedHeading,
+    YawToRecordedHeadingViaController)
 from hightide_mission.behaviors.gate import create_gate_subtree, HeadingTurn
 from hightide_mission.behaviors.torpedoes import create_torpedoes_subtree
 from hightide_mission.behaviors.octagon import create_octagon_subtree
@@ -563,13 +564,12 @@ class MissionNode(Node):
             # Now at depth — PID-yaw back to the recorded gate heading, undoing
             # the coin-flip repositioning. No opening advance: the gate task's
             # own approach drives the forward motion from here.
+            # Route through yaw_controller_node's /hightide/rotate_to_heading —
+            # the SAME rotate loop/gains as the style spin's return, not a
+            # parallel py_trees PID (so they can't drift apart).
             predive_children.append(
-                YawToRecordedHeading('YawToGateHeading',
-                                     timeout=self.initial_turn_timeout,
-                                     kp=self.heading_turn_kp, ki=self.heading_turn_ki,
-                                     kd=self.heading_turn_kd,
-                                     output_limit=self.heading_turn_output_limit,
-                                     settle_sec=self.heading_turn_settle))
+                YawToRecordedHeadingViaController(
+                    'YawToGateHeading', timeout=self.initial_turn_timeout))
         else:
             # Legacy opening maneuver (coin-flip disabled): optional fixed turn
             # + advance toward the gate.

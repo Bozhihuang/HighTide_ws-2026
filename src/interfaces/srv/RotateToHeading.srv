@@ -1,0 +1,11 @@
+# Rotate in place to an ABSOLUTE target heading (radians, IMU/ENU frame — the
+# same frame quaternion_to_yaw(/mavros/imu/data) produces, shared by the
+# mission node and yaw_controller_node). Blocking: the response comes back
+# only once the rotation has settled on target or timed out. This is the same
+# rotate_to_heading() loop the /hightide/yaw_spin style spin uses for its
+# return-to-heading, so callers get identical, single-source behavior.
+float64 target_heading
+float64 timeout_sec        # 0 = use the node's default rotate timeout
+---
+bool success
+string message

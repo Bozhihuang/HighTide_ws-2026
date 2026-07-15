@@ -7,6 +7,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Imu
 from std_srvs.srv import Trigger
 from hightide_interfaces.msg import ThrusterCommand
+from hightide_interfaces.srv import RotateToHeading
 from hightide_navigation import PIDController, normalize_angle, quaternion_to_yaw
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
@@ -75,6 +76,15 @@ class YawControllerNode(Node):
         # Style spin service (1 full 360° spin)
         self.spin_srv = self.create_service(
             Trigger, '/hightide/yaw_spin', self._yaw_spin_service)
+
+        # Rotate-to-absolute-heading service — the SAME rotate_to_heading()
+        # loop the spin uses for its return-to-heading, exposed so the mission
+        # (coin-flip yaw-back etc.) can route its precision turns through this
+        # one tuned implementation instead of a parallel copy. Blocking: the
+        # response is sent only once the rotation settles / times out.
+        self.rotate_srv = self.create_service(
+            RotateToHeading, '/hightide/rotate_to_heading',
+            self._rotate_to_heading_service)
 
         self.get_logger().info('Yaw Controller Node started')
 
@@ -185,6 +195,20 @@ class YawControllerNode(Node):
         success = self.execute_spin(num_spins=self.spin_count, clockwise=True)
         response.success = success
         response.message = 'Yaw spin complete' if success else 'Yaw spin failed'
+        return response
+
+    def _rotate_to_heading_service(self, request, response):
+        """Rotate to an absolute target heading (radians) via the shared
+        rotate_to_heading() loop — same behavior as the spin's return."""
+        timeout = request.timeout_sec if request.timeout_sec > 0.0 else 10.0
+        self.get_logger().info(
+            f'Rotate-to-heading request: {math.degrees(request.target_heading):.1f}° '
+            f'(timeout {timeout:.1f}s)')
+        success = self.rotate_to_heading(request.target_heading, timeout=timeout)
+        self.cmd_pub.publish(ThrusterCommand())   # stop-on-exit
+        response.success = success
+        response.message = ('Reached target heading' if success
+                            else 'Rotate-to-heading failed/timed out')
         return response
 
 

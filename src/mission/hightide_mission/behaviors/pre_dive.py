@@ -223,6 +223,100 @@ class YawToRecordedHeading(py_trees.behaviour.Behaviour):
         return py_trees.common.Status.RUNNING
 
 
+class YawToRecordedHeadingViaController(py_trees.behaviour.Behaviour):
+    """
+    Same job as YawToRecordedHeading, but the rotation is executed by
+    yaw_controller_node's /hightide/rotate_to_heading service — the SAME
+    rotate_to_heading() loop (and gains) the style spin's return uses. This
+    gives the coin-flip yaw-back one tuned rotation implementation instead of
+    a parallel py_trees PID, so the two can't drift apart.
+
+    Reads heading_key (default INITIAL_HEADING) + offset_deg to build the
+    absolute target, threads it through INTENDED_HEADING so the following
+    straight leg holds the true course line (identical to YawToRecordedHeading),
+    then calls the service and ticks RUNNING until it returns. Best-effort:
+    skips if no heading was recorded, and succeeds even on a missing service /
+    failed response so a controller hiccup can't stall pre-dive.
+
+    The service call is async — while it blocks yaw_controller_node driving the
+    turn, this behavior just ticks RUNNING and publishes nothing, so
+    yaw_controller_node owns /hightide/cmd_vel for the maneuver (exactly like
+    the gate's CallTriggerService('YawSpinStyle') does for the spin).
+    """
+
+    def __init__(self, name='YawToRecordedHeadingViaController', heading_key=None,
+                 offset_deg=0.0, timeout=20.0, wait_timeout=10.0):
+        super().__init__(name)
+        self.heading_key = heading_key or bb.INITIAL_HEADING
+        self.offset_deg = offset_deg
+        self.timeout = timeout            # rotate budget handed to the service
+        self.wait_timeout = wait_timeout  # how long to wait for the service to appear
+        self.target_heading = None
+        self.client = None
+        self.future = None
+        self.wait_start = None
+        self.blackboard = self.attach_blackboard_client()
+        self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.INTENDED_HEADING, access=py_trees.common.Access.WRITE)
+        self.blackboard.register_key(key=self.heading_key, access=py_trees.common.Access.READ)
+
+    def initialise(self):
+        from hightide_navigation import normalize_angle
+        from hightide_interfaces.srv import RotateToHeading
+        node = self.blackboard.get(bb.ROS_NODE)
+        try:
+            recorded = self.blackboard.get(self.heading_key)
+        except KeyError:
+            recorded = None
+        if recorded is None:
+            self.target_heading = None
+        else:
+            self.target_heading = normalize_angle(
+                recorded + math.radians(self.offset_deg))
+            # Thread the intent so the next straight leg holds THIS heading,
+            # not wherever the turn actually stopped (see YawToRecordedHeading).
+            self.blackboard.set(bb.INTENDED_HEADING, self.target_heading)
+        self.client = node.create_client(RotateToHeading, '/hightide/rotate_to_heading')
+        self.future = None
+        self.wait_start = pytime.time()
+        if self.target_heading is None:
+            node.get_logger().warn(
+                f'No recorded heading ({self.heading_key}) — skipping yaw-to-heading')
+        else:
+            node.get_logger().info(
+                f'Yawing to {math.degrees(self.target_heading):.1f}° via yaw_controller '
+                f'({self.heading_key} + {self.offset_deg:.0f}°)')
+
+    def update(self):
+        from hightide_interfaces.srv import RotateToHeading
+        node = self.blackboard.get(bb.ROS_NODE)
+
+        if self.target_heading is None:
+            return py_trees.common.Status.SUCCESS
+
+        if self.future is None:
+            if not self.client.service_is_ready():
+                if (pytime.time() - self.wait_start) > self.wait_timeout:
+                    node.get_logger().warn(
+                        '/hightide/rotate_to_heading not available — skipping yaw-back')
+                    return py_trees.common.Status.SUCCESS
+                return py_trees.common.Status.RUNNING
+            req = RotateToHeading.Request()
+            req.target_heading = float(self.target_heading)
+            req.timeout_sec = float(self.timeout)
+            self.future = self.client.call_async(req)
+            return py_trees.common.Status.RUNNING
+
+        if not self.future.done():
+            return py_trees.common.Status.RUNNING
+
+        result = self.future.result()
+        ok = bool(result and result.success)
+        node.get_logger().info(
+            f'rotate_to_heading -> {"ok" if ok else "failed/timeout"} — proceeding')
+        return py_trees.common.Status.SUCCESS
+
+
 class ArmVehicle(py_trees.behaviour.Behaviour):
     """Arm the vehicle via /hightide/arm service."""
 
