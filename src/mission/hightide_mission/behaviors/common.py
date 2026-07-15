@@ -59,6 +59,8 @@ def yaw_hold(node, locked_heading, kp=None, kd=None, limit=None):
     sign = float(getattr(node, 'yaw_hold_sign', -1.0))
     from hightide_navigation import normalize_angle
     err = normalize_angle(locked_heading - current)
+    if yaw_hold_diverged(node, err):
+        return 0.0
 
     now = pytime.time()
     d = 0.0
@@ -72,6 +74,35 @@ def yaw_hold(node, locked_heading, kp=None, kd=None, limit=None):
 
     out = sign * (kp * err + kd * d)
     return max(-limit, min(limit, out))
+
+
+def yaw_hold_diverged(node, err):
+    """True (and screams) when a heading HOLD is impossibly far from target.
+
+    A hold can never legitimately see 120°+ of error: legs lock the intended
+    heading only within 30° of the nose, live locks start at 0°, and a stable
+    PD only shrinks the error from there. Being at 120°+ means the loop is
+    DIVERGING — the classic cause is an inverted yaw_hold_sign, which is
+    positive feedback with its stable equilibrium exactly 180° OFF target
+    (observed in-pool 2026-07-15: semicircle U-turn mid-leg at the gate
+    PassThrough, then a rock-steady straight drive back into the wall).
+    Callers must command ZERO yaw on True: within the rc_override deadzone
+    ArduSub's own ALT_HOLD heading lock takes over, so the sub at least stops
+    circling and drives straight while the log points at the sign.
+    """
+    if err is None or abs(err) <= math.radians(120.0):
+        return False
+    now = pytime.time()
+    if now - getattr(node, '_yaw_div_warn_t', 0.0) > 2.0:
+        node._yaw_div_warn_t = now
+        node.get_logger().error(
+            f'YAW HOLD DIVERGING: heading error {math.degrees(abs(err)):.0f}° '
+            '— a hold can never be this far off its target. Classic cause: '
+            'wrong yaw_hold_sign (positive feedback settles 180° OFF target: '
+            'semicircle U-turn, then drives straight back). Zeroing yaw — '
+            'FCU holds heading. Fix live: ros2 param set /mission_node '
+            f'yaw_hold_sign {-float(getattr(node, "yaw_hold_sign", -1.0)):.1f}')
+    return True
 
 
 def pose_yaw(pose):
@@ -752,6 +783,8 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
         Also stashes the error so sway_hold's yaw-settled gate can see it."""
         self._last_yaw_err = heading_error(node, self._locked_heading)
         if self._last_yaw_err is None:
+            return 0.0
+        if yaw_hold_diverged(node, self._last_yaw_err):
             return 0.0
         y = (float(getattr(node, 'yaw_hold_sign', -1.0))
              * self.companion_yaw_pid.compute(self._last_yaw_err, dt))

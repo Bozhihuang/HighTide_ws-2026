@@ -117,7 +117,15 @@ mission_node:
     yaw_hold_kp: 0.2
     yaw_hold_kd: 0.13
     yaw_hold_limit: 0.6        # pidtest's companion is unclamped (±1) — lower only if a glitch ever spins the sub
-    yaw_hold_sign: 1.0
+    # -1.0 is NOT optional on this vehicle: HeadingTurn/YawToRecordedHeading
+    # hardcode the same negation and CONVERGE in water, so the hold must match.
+    # +1.0 turns the hold into positive feedback whose STABLE resting point is
+    # 180° off target — observed 2026-07-15 at gate PassThrough: the sub arcs a
+    # semicircle U-turn mid-leg (yaw diverging while surge continues), settles
+    # perfectly reversed, then drives dead straight back into the wall. If the
+    # sub ever U-turns mid-leg again, check this FIRST (the code also screams
+    # 'YAW HOLD DIVERGING' when heading error passes 120°).
+    yaw_hold_sign: -1.0
 
     # ---- Lateral hold (every straight leg) ----
     # The sway-axis twin of the heading hold above: holds the LINE the leg
