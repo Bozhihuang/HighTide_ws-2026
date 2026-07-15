@@ -142,8 +142,8 @@ mission_node:
     # Quick isolation test: sway_hold_enabled false restores the old
     # zero-sway behavior, so you can A/B whether the hold is helping.
     sway_hold_enabled: true
-    sway_hold_kp: 0.5          # <<< TUNE IN POOL
-    sway_hold_kd: 0.15         # <<< TUNE IN POOL
+    sway_hold_kp: 0.2          # <<< TUNE IN POOL
+    sway_hold_kd: 0.0         # <<< TUNE IN POOL
     sway_hold_limit: 0.2       # max lateral trim authority
     sway_hold_sign: 1.0        # flip to -1.0 if the correction pushes the wrong way
     sway_hold_deadband_m: 0.1  # ignore cross-track error under this (m)
