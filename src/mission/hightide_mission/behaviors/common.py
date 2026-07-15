@@ -266,9 +266,25 @@ def sway_hold(node, blackboard, locked_track, kp=None, kd=None, limit=None,
         return 0.0
     if not bool(getattr(node, 'sway_hold_enabled', True)):
         return 0.0
+    now = pytime.time()
     if heading_err_rad is not None:
+        # Threshold with HYSTERESIS: trip closed above max_err, reopen only
+        # once the error falls below 60% of it. Without the band, an error
+        # hovering right at the threshold toggles the trim on/off every tick —
+        # a square-wave sway command, which is its own yaw disturbance.
         max_err = math.radians(float(getattr(node, 'sway_hold_max_yaw_err_deg', 8.0)))
-        if abs(heading_err_rad) > max_err:
+        blocked = False
+        state = getattr(node, '_sway_gate_state', None)
+        if state is not None:
+            prev_blocked, prev_t = state
+            if 0.0 < (now - prev_t) < 0.5:   # >0.5s gap = behavior handoff, reset
+                blocked = prev_blocked
+        if blocked:
+            blocked = abs(heading_err_rad) > 0.6 * max_err
+        else:
+            blocked = abs(heading_err_rad) > max_err
+        node._sway_gate_state = (blocked, now)
+        if blocked:
             return 0.0   # nose unsettled — no lateral trim until yaw_hold wins
     try:
         pose = blackboard.get(bb.CURRENT_POSE)

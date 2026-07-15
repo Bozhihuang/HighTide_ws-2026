@@ -141,20 +141,21 @@ mission_node:
     # transit_thrust — this should nudge the sub back, never fight the surge.
     # Quick isolation test: sway_hold_enabled false restores the old
     # zero-sway behavior, so you can A/B whether the hold is helping.
-    # DISABLED by default (2026-07-15): sway thrust is never yaw-neutral —
-    # off-axis lateral thrusters twist the hull, and crabbing at forward speed
-    # adds a Munk moment — so the trim can degrade straight-line driving, and
-    # sway_hold_sign is still UNVERIFIED in water (a wrong sign is lateral
-    # positive feedback that looks exactly like "can't drive straight").
-    # Enable procedure, straight-line first:
-    #   1. Baseline with this false: verify pure surge + FOG yaw hold drives
-    #      straight (identical to pre-sway_hold behavior).
-    #   2. ros2 param set /mission_node sway_hold_enabled true — same line:
-    #      veers HARDER -> flip sway_hold_sign; wags -> lower kp / raise kd.
+    # ENABLED, protected by the yaw-settled gate: the lateral trim runs ONLY
+    # while |heading error| < sway_hold_max_yaw_err_deg (with hysteresis —
+    # trips at the threshold, releases at 60% of it, so it can't chatter).
+    # Yaw always wins: if the nose is off course, sway goes to zero until
+    # yaw_hold has settled it. This exists because sway thrust is never
+    # yaw-neutral (off-axis thrusters + Munk moment while crabbing at speed).
+    # POOL CHECKS, in order:
+    #   1. sway_hold_sign is UNVERIFIED in water. If enabling this makes the
+    #      sub veer HARDER off line, flip it to -1.0 live — wrong sign is
+    #      lateral positive feedback and no gain change will fix it.
+    #   2. Wags side to side -> lower kp / raise kd. Chatters near the line ->
+    #      raise sway_hold_deadband_m.
     #   3. Sanity: LEG lines' sway_avg sign should OPPOSE the water's push.
-    # Even when enabled, the trim auto-suppresses while |heading error| >
-    # sway_hold_max_yaw_err_deg, so sway can never fight the yaw hold.
-    sway_hold_enabled: false
+    # Isolation A/B: sway_hold_enabled false = pure surge + FOG yaw hold.
+    sway_hold_enabled: true
     sway_hold_kp: 0.2          # <<< TUNE IN POOL
     sway_hold_kd: 0.0         # <<< TUNE IN POOL
     sway_hold_limit: 0.2       # max lateral trim authority
@@ -263,6 +264,22 @@ rc_override_node:
     deadzone: 0.05
     timeout_sec: 0.5              # Safety timeout — neutral after 500ms silence
     hold_max_sec: 15.0           # auto-release RC-override hold if a holder (barrel roll) crashes
+    # ---- Battery voltage compensation (run-to-run PID consistency) ----
+    # T200 thrust at a fixed PWM scales ~ with voltage SQUARED, so the same
+    # PID gains run 20-30% hotter on a fresh pack than a drained one — the
+    # main reason "every run is different". Commands are scaled by
+    # (voltage_ref / v_batt)^2, v_batt low-passed over ~10 s, clamped to
+    # [0.85, 1.25]. If /mavros/battery never publishes, scale stays 1.0.
+    # >>> SET voltage_ref TO THE PACK VOLTAGE YOUR GAINS WERE TUNED AT <<<
+    # (check with: ros2 topic echo /mavros/battery --once | grep voltage)
+    # ALTERNATIVE: ArduSub's own MOT_BAT_VOLT_MAX/MIN does the same thing
+    # FCU-side — enable ONE of the two, NEVER both (double compensation).
+    voltage_comp_enabled: true
+    voltage_ref: 16.0            # V at tuning time — MEASURE AND SET
+    voltage_comp_exp: 2.0        # thrust ~ V^2 at fixed PWM
+    voltage_comp_min: 0.85       # scale clamp (bad reading can't go wild)
+    voltage_comp_max: 1.25
+    voltage_filter_tau: 10.0     # slow filter: don't chase load sag
 
 depth_controller_node:
   ros__parameters:
