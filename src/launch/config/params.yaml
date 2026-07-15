@@ -1,7 +1,7 @@
 # ============== MISSION ==============
 mission_node:
   ros__parameters:
-    mission_depth_m: 1.0           # Competition pool depth target
+    mission_depth_m: 0.5           # Competition pool depth target
     mission_timeout_sec: 900.0     # 15 minute mission window
     tick_rate: 20.0                # Behavior tree tick rate (Hz) — matches pidtest's 20 Hz control loop
     chosen_role: 'survey_repair'   # Pre-race coin-flip choice: survey_repair | search_rescue
@@ -54,7 +54,7 @@ mission_node:
 
     # After the gate + 2x style spin, dive this much DEEPER for the dead-reckon
     # slalom legs and everything after.
-    slalom_extra_depth_m: 0.5
+    slalom_extra_depth_m: 0.2
 
     # Per-mission time budgets (s). Each subtree splits its budget across its own
     # timeout-bearing behaviors, preserving tuned ratios. Sum can exceed
