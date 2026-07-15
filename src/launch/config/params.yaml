@@ -258,6 +258,23 @@ depth_controller_node:
     max_output: 400
     depth_tolerance: 0.5          # meters
     integral_max: 100.0
+    # ---- Surface tare + garbage gate ----
+    # /mavros/global_position/rel_alt is EKF-altitude-minus-HOME-altitude, NOT
+    # water depth: a home/EKF-origin elevation offset makes it read hundreds of
+    # metres off (observed -630 m) while BlueOS's water-pressure depth display
+    # is fine. auto_tare records the surface reference during the first
+    # tare_duration_sec after boot (sub on deck) and cancels any constant
+    # offset; readings still implausible after taring (drifting cabin-baro in
+    # the EKF — an FCU config problem) are REJECTED, never fed to the PID or
+    # republished. Calibrated depth goes out on /hightide/current_depth, which
+    # mission_node prefers over raw rel_alt.
+    # If this node is ever restarted while the sub is SUBMERGED: set auto_tare
+    # false and put the known surface rel_alt into surface_offset_m instead.
+    auto_tare: true
+    tare_duration_sec: 5.0
+    surface_offset_m: 0.0
+    max_plausible_depth_m: 10.0   # competition pools are < 8 m
+    max_depth_rate_mps: 2.0       # reject faster-than-physical depth jumps
 
 mode_manager_node:
   ros__parameters:

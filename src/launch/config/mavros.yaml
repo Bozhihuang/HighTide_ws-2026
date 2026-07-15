@@ -35,15 +35,28 @@ mavros:
 
     # 4. Plugin Whitelist ( AUVC Specific )
     # Disable heavy, unused drone plugins to prevent CPU overload and buffer stalls.
-    plugins:
-      - sys_status
+    # NOTE (2026-07-15): this section previously used the key `plugins:`, which is
+    # NOT a mavros ROS2 parameter — it was silently ignored and EVERY plugin
+    # loaded (proof: /mavros/global_position/rel_alt published despite
+    # global_position not being listed). The real parameter is plugin_allowlist.
+    # This is therefore the FIRST time the whitelist actually takes effect —
+    # bench-verify every /mavros/* topic the stack consumes before a pool run:
+    #   imu/data, global_position/rel_alt, rc/override, state, set_mode,
+    #   cmd/arming, cmd/command (barrel roll).
+    # (The /mavros/zed/* topics come from the ZED wrapper's namespace, not a
+    # mavros plugin — unaffected by this list.)
+    plugin_allowlist:
+      - sys_status        # /mavros/state + /mavros/set_mode
       - sys_time
-      - state
-      - command
-      - imu
-      - rc_io
+      - command           # /mavros/cmd/arming, /mavros/cmd/command
+      - imu               # /mavros/imu/data (FOG heading)
+      - rc_io             # /mavros/rc/override (all thruster output!)
       - setpoint_raw
       - local_position
+      - global_position   # /mavros/global_position/rel_alt (depth feedback)
+      - home_position     # /mavros/home_position/home — echo it to diagnose the
+                          # rel_alt home-altitude offset (the -630 m bug)
+      - altitude          # /mavros/altitude — depth_source 'altitude' fallback
       - param
 
     # 5. Sensor Stream Configurations (IMU & System Status)

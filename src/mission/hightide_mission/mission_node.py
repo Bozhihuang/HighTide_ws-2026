@@ -395,6 +395,16 @@ class MissionNode(Node):
         self.create_subscription(
             Odometry, '/mavros/zed/odom',
             self._odom_cb, sensor_qos)
+        # Depth: PRIMARY source is the depth controller's calibrated
+        # /hightide/current_depth (positive = deeper, surface-tared, garbage-
+        # gated). Raw rel_alt is EKF-altitude-minus-HOME-altitude — with a
+        # home/EKF-origin elevation offset it reads hundreds of metres off
+        # (observed -630 m) while BlueOS's water-pressure depth is fine. The
+        # raw subscription stays only as a fallback if the depth controller
+        # dies (its feed goes silent >2 s).
+        self.create_subscription(
+            Float64, '/hightide/current_depth',
+            self._calib_depth_cb, 10)
         self.create_subscription(
             Float64, '/mavros/global_position/rel_alt',
             self._depth_cb, sensor_qos)
@@ -877,8 +887,20 @@ class MissionNode(Node):
             self.odom_rx_time = pytime.time()
         self.blackboard.set(bb.CURRENT_POSE, msg)
 
+    def _calib_depth_cb(self, msg):
+        """Calibrated depth from depth_controller_node — already positive-down,
+        surface-tared, and plausibility-gated. Always wins over raw rel_alt."""
+        self._calib_depth_time = pytime.time()
+        self.blackboard.set(bb.CURRENT_DEPTH, msg.data)
+
     def _depth_cb(self, msg):
-        self.blackboard.set(bb.CURRENT_DEPTH, -msg.data)  # Positive = deeper
+        """RAW rel_alt fallback — only trusted while the calibrated feed is
+        silent (depth controller not up yet / died). No tare: raw rel_alt can
+        carry a huge home-offset, so behaviors relying on depth may misbehave
+        in this mode — _log_health can't tell, but the depth controller's own
+        log will be shouting about it."""
+        if pytime.time() - getattr(self, '_calib_depth_time', 0.0) > 2.0:
+            self.blackboard.set(bb.CURRENT_DEPTH, -msg.data)  # Positive = deeper
 
     def _imu_cb(self, msg):
         from hightide_navigation import quaternion_to_yaw

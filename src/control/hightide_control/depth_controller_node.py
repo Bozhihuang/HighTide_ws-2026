@@ -40,6 +40,28 @@ class DepthControllerNode(Node):
         #   'rel_alt'  -> std_msgs/Float64      /mavros/global_position/rel_alt
         #   'altitude' -> mavros_msgs/Altitude  /mavros/altitude   (uses .relative)
         self.declare_parameter('depth_source', 'rel_alt')
+        # --- Surface tare + plausibility gate -------------------------------
+        # rel_alt is EKF-altitude-minus-HOME-altitude, NOT water-pressure depth.
+        # If the home/EKF origin carries a real-world elevation (BlueOS "Set EKF
+        # origin" stores your city's altitude), rel_alt sits at a huge constant
+        # offset (observed: ~-630 m) while BlueOS's own depth display — surface-
+        # referenced water pressure — stays correct. auto_tare kills any such
+        # constant offset: at boot (vehicle on deck ≈ surface) the median of the
+        # first tare_duration_sec of readings becomes the surface reference and
+        # depth = -(rel_alt - ref). If the node ever restarts while SUBMERGED,
+        # set auto_tare false and provide surface_offset_m manually instead.
+        self.declare_parameter('auto_tare', True)
+        self.declare_parameter('tare_duration_sec', 5.0)
+        self.declare_parameter('surface_offset_m', 0.0)   # used when auto_tare false
+        # Readings that map outside (-1.5 .. max_plausible_depth_m) after taring
+        # are REJECTED (not fed to the PID, not republished): a drifting internal
+        # cabin baro feeding the EKF (enclosure heating = fake hundreds of m) is
+        # an FCU config problem no ROS math can fix — reject loudly instead of
+        # commanding full ascend against garbage. Jumps faster than
+        # max_depth_rate_mps are rejected too (3 s of persistent rejects resyncs,
+        # in case the EKF origin legitimately re-zeroed mid-run).
+        self.declare_parameter('max_plausible_depth_m', 10.0)
+        self.declare_parameter('max_depth_rate_mps', 2.0)
 
         self.kp = self.get_parameter('kp').value
         self.ki = self.get_parameter('ki').value
@@ -49,6 +71,11 @@ class DepthControllerNode(Node):
         self.depth_tolerance = self.get_parameter('depth_tolerance').value
         self.integral_max = self.get_parameter('integral_max').value
         self.depth_source = self.get_parameter('depth_source').value
+        self.auto_tare = bool(self.get_parameter('auto_tare').value)
+        self.tare_duration = float(self.get_parameter('tare_duration_sec').value)
+        self.surface_offset = float(self.get_parameter('surface_offset_m').value)
+        self.max_plausible = float(self.get_parameter('max_plausible_depth_m').value)
+        self.max_rate = float(self.get_parameter('max_depth_rate_mps').value)
 
         # State
         self.target_depth = None  # None = no target, hold current
@@ -59,6 +86,13 @@ class DepthControllerNode(Node):
         self.last_time = None
         self.current_depth = 0.0
         self._diag_tick = 0        # throttles the "why am I holding 1500" log
+        # Tare / gate state
+        self._tare_samples = []
+        self._tare_start = None
+        self._tare_ref = None if self.auto_tare else self.surface_offset
+        self._last_accept_t = None
+        self._reject_since = None
+        self._last_warn_t = 0.0
 
         # If gains never loaded (ran without --params-file / wrong node name), the PID
         # output is 0 and pwm sticks at 1500 — indistinguishable from "no feedback"
@@ -97,6 +131,12 @@ class DepthControllerNode(Node):
 
         # Publisher — PWM for throttle channel
         self.pwm_pub = self.create_publisher(Int32, '/hightide/depth_pwm', 10)
+        # Calibrated depth (positive = deeper, surface-tared, garbage-gated).
+        # THE depth the rest of the stack should consume — mission_node prefers
+        # this over raw rel_alt, so the -630m home-offset class of garbage never
+        # reaches mission logic.
+        self.depth_out_pub = self.create_publisher(
+            Float64, '/hightide/current_depth', 10)
 
         # Timer
         period = 1.0 / self.publish_rate
@@ -106,19 +146,91 @@ class DepthControllerNode(Node):
             f'Depth Controller started — Kp={self.kp} Ki={self.ki} Kd={self.kd}')
 
     def _depth_callback(self, msg: Float64):
-        """
-        Receive current depth from MAVROS.
-        rel_alt is relative altitude: negative = below surface for subs.
-        We convert to positive-down convention: depth_m = -rel_alt.
-        """
-        self.current_depth = -msg.data  # Convert to positive = deeper
-        self.depth_received = True
+        """rel_alt from MAVROS: negative = below the HOME reference (not the
+        surface — see the tare comment in __init__). Tared + gated in _ingest."""
+        self._ingest(msg.data)
 
     def _altitude_callback(self, msg: Altitude):
-        """Depth from mavros_msgs/Altitude. `relative` is relative to the arming
-        altitude (negative below surface for a sub), so depth_m = -relative."""
-        self.current_depth = -msg.relative  # Convert to positive = deeper
+        """Depth from mavros_msgs/Altitude (.relative). Same tare + gate path."""
+        self._ingest(msg.relative)
+
+    def _warn_throttled(self, text):
+        now = self.get_clock().now().nanoseconds / 1e9
+        if now - self._last_warn_t >= 2.0:
+            self._last_warn_t = now
+            self.get_logger().warn(text)
+
+    def _ingest(self, rel_alt):
+        """Turn a raw home-relative altitude into trusted positive-down depth.
+
+        Pipeline: (1) auto-tare — median of the first tare_duration_sec of
+        readings becomes the surface reference, so any constant home/EKF-origin
+        altitude offset (the -630 m class of garbage) cancels exactly;
+        (2) plausibility gate — post-tare depths outside (-1.5, max_plausible)
+        or jumping faster than max_rate are rejected and never reach the PID or
+        /hightide/current_depth.
+
+        Rate-gate self-healing: rate is measured against the LAST ACCEPTED
+        sample, so a single glitch is rejected outright, while a SUSTAINED step
+        is re-accepted once enough time has passed that the sub could
+        physically have moved there (|jump| / max_rate seconds) — the gate
+        converges to reality at the vehicle's own speed limit. The 3 s
+        persistent-reject resync below is a backstop for pathological cases
+        (oscillating garbage) so depth can never be locked out forever.
+        """
+        now = self.get_clock().now().nanoseconds / 1e9
+
+        # --- Tare phase ---
+        if self._tare_ref is None:
+            if self._tare_start is None:
+                self._tare_start = now
+                self.get_logger().info(
+                    f'Depth tare: sampling surface reference for '
+                    f'{self.tare_duration:.0f}s (raw rel_alt={rel_alt:+.1f}m)')
+            self._tare_samples.append(rel_alt)
+            if (now - self._tare_start) < self.tare_duration:
+                return  # not trusted yet — controller holds 1500 meanwhile
+            s = sorted(self._tare_samples)
+            self._tare_ref = s[len(s) // 2]
+            if abs(self._tare_ref) > 2.0:
+                self.get_logger().warn(
+                    f'Depth tare: surface reference {self._tare_ref:+.1f}m — '
+                    'rel_alt has a big home/EKF-origin offset. Tared out here, '
+                    'but check BARO/EKF origin config on the FCU.')
+            else:
+                self.get_logger().info(
+                    f'Depth tare complete: surface reference {self._tare_ref:+.2f}m')
+
+        depth = -(rel_alt - self._tare_ref)   # positive = deeper
+
+        # --- Plausibility gate ---
+        if not (-1.5 <= depth <= self.max_plausible):
+            self._warn_throttled(
+                f'REJECTING depth {depth:+.1f}m (raw rel_alt {rel_alt:+.1f}m) — '
+                f'outside (-1.5, {self.max_plausible:.0f})m. EKF altitude is '
+                'garbage (wrong baro / origin reset?) — fix on the FCU side.')
+            return
+        if self._last_accept_t is not None:
+            dt = max(now - self._last_accept_t, 0.02)
+            rate = abs(depth - self.current_depth) / dt
+            if rate > self.max_rate:
+                if self._reject_since is None:
+                    self._reject_since = now
+                if (now - self._reject_since) < 3.0:
+                    self._warn_throttled(
+                        f'REJECTING depth {depth:+.2f}m — jumped '
+                        f'{rate:.1f}m/s from {self.current_depth:+.2f}m')
+                    return
+                self.get_logger().warn(
+                    f'Depth jump persisted 3s — resyncing to {depth:+.2f}m')
+        self._reject_since = None
+        self._last_accept_t = now
+
+        self.current_depth = depth
         self.depth_received = True
+        out = Float64()
+        out.data = depth
+        self.depth_out_pub.publish(out)
 
     def _target_depth_callback(self, msg: Float64):
         """Receive target depth (positive = deeper in meters)."""
