@@ -107,6 +107,78 @@ def read_use_odometry(blackboard, default=True):
     return default if v is None else bool(v)
 
 
+def odom_is_fresh(node, max_age=None):
+    """True when the ZED pose can be trusted RIGHT NOW.
+
+    Three independent kill switches, any of which vetoes trust:
+      1. mission_node's odom callback stamps `node.odom_rx_time` only when the
+         pose VALUE changes — so a ZED that keeps republishing a bit-identical
+         pose (tracking frozen, the classic murky-water failure) goes stale here
+         exactly like one that stopped publishing. Real VO output always jitters
+         at the millimetre level, even holding station, so value-change is a
+         safe liveness signal.
+      2. age > odom_stale_sec (node param, default 0.7 s).
+      3. the nav tier manager demoted to DEAD_RECKONING (covariance blowup /
+         its own staleness check) — `node.nav_tier_is_dr`.
+
+    This gate exists because the old code only ever checked `pose is None`,
+    which is false forever after the FIRST message: a mid-leg ZED freeze left
+    the transit PIDing against a frozen position — error never shrinks, so it
+    surged at full clamp for the whole 3x-nominal timeout (up to 3x the leg
+    distance) and then logged SUCCESS.
+    """
+    rx = getattr(node, 'odom_rx_time', None)
+    if rx is None:
+        return False
+    if max_age is None:
+        max_age = float(getattr(node, 'odom_stale_sec', 0.7))
+    if (pytime.time() - rx) > max_age:
+        return False
+    if bool(getattr(node, 'nav_tier_is_dr', False)):
+        return False
+    return True
+
+
+def resolve_course_heading(node, blackboard):
+    """The heading a straight leg should HOLD: the INTENDED course heading
+    (threaded through bb.INTENDED_HEADING by the preceding turn) when we are
+    plausibly pointed at it, else the live FOG heading. Returns (heading, src)
+    where src is 'intended' / 'live' / 'none' (heading None).
+
+    Why not just lock the live heading (the old behavior)? HeadingTurn declares
+    success anywhere inside tolerance_deg of its target, and the sub still has
+    yaw rate when it does — so each leg locked "wherever the nose happened to
+    be at that instant". 5° off on a 6 m leg is half a metre of lateral miss,
+    and the error COMPOUNDS turn over turn through the slalom. Locking the
+    intended heading lets yaw_hold pull the leg onto the true course line
+    during the drive, so turn tolerance stops accumulating; the FOG (the one
+    sensor we fully trust) becomes the spine of the whole course.
+
+    The sanity window (intended_heading_max_dev_deg node param, default 30°)
+    is what makes a stale intent harmless with NO invalidation bookkeeping:
+    after a yaw sweep / octagon facing scan the nose is far from the last
+    written intent, and an intent that far away is no longer a plausible
+    "finish the turn" correction — fall back to the live heading and log it.
+    """
+    cur = lock_heading(node)
+    try:
+        intended = blackboard.get(bb.INTENDED_HEADING)
+    except (KeyError, AttributeError):
+        intended = None
+    if intended is None or cur is None:
+        return (cur, 'live' if cur is not None else 'none')
+    from hightide_navigation import normalize_angle
+    dev = abs(normalize_angle(intended - cur))
+    max_dev = math.radians(float(getattr(node, 'intended_heading_max_dev_deg', 30.0)))
+    if dev <= max_dev:
+        return (intended, 'intended')
+    node.get_logger().warn(
+        f'Intended heading is {math.degrees(dev):.0f}° from the nose '
+        f'(> {math.degrees(max_dev):.0f}°) — stale after a sweep? '
+        'Holding live heading instead')
+    return (cur, 'live')
+
+
 def lock_track(node, blackboard):
     """Snapshot the world TRACK LINE to hold laterally: the ZED position and
     heading right now. Returns (x0, y0, yaw0) or None if it can't be held.
@@ -126,6 +198,8 @@ def lock_track(node, blackboard):
     """
     if not read_use_odometry(blackboard):
         return None
+    if not odom_is_fresh(node):
+        return None   # don't lock a line to a frozen/stale pose
     try:
         pose = blackboard.get(bb.CURRENT_POSE)
     except KeyError:
@@ -172,8 +246,8 @@ def sway_hold(node, blackboard, locked_track, kp=None, kd=None, limit=None):
         pose = blackboard.get(bb.CURRENT_POSE)
     except KeyError:
         pose = None
-    if pose is None:
-        return 0.0
+    if pose is None or not odom_is_fresh(node):
+        return 0.0   # never trim against a stale/frozen pose
 
     if kp is None:
         kp = float(getattr(node, 'sway_hold_kp', 0.5))
@@ -279,12 +353,33 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
     held by the FOG, so it strafes rather than turns — then hands off to the
     task's own visual search to acquire the prop.
 
-    Two movement modes, chosen by the global blackboard flag USE_ODOMETRY:
-      * ZED (odometry): closed-loop — build a world target from the offset and
-        drive to it, stopping within pos_tol. Accurate.
-      * dead reckon: open-loop — drive the offset's direction at `speed` for
-        time = distance / DEAD_RECKON_MPS. No position feedback; only as good as
-        the mps calibration, but works with ZED odometry down.
+    Two movement modes; unlike before, a leg can DEMOTE mid-flight:
+      * 'zed': closed-loop on ZED odometry. Pure-forward legs (the whole live
+        course) drive FOG-primary: yaw_hold on the intended course heading,
+        progress = ZED displacement projected onto the leg's START axis (a
+        scalar), sway_hold for cross-track. A 1-D along-track error is immune
+        to mid-leg ZED yaw wander, which used to bend the old world-target
+        trajectory. Diagonal legs keep the original 2-D world-target PID.
+      * 'dr': open-loop — drive the offset direction at `speed` for
+        time = remaining / DEAD_RECKON_MPS.
+    A leg starts in 'zed' whenever ZED is healthy (odom_is_fresh + nav tier),
+    and the moment ZED goes stale/frozen mid-leg it falls back to 'dr' FOR THE
+    REMAINING distance (anchored at the last good along-track progress) instead
+    of silently truncating the leg (the old `pose is None` check could never
+    fire and the old fallback stopped dead where it was). Once demoted it stays
+    demoted for the leg — predictability over cleverness.
+
+    While cruising in 'zed' mode at the saturated speed cap, the leg measures
+    its own actual m/s and EMA-updates bb.DEAD_RECKON_MPS (mps autocal), so a
+    later ZED dropout dead-reckons with TODAY's measured speed — battery, trim,
+    depth included — not a config constant from some other day.
+
+    Heading: locks the INTENDED course heading via resolve_course_heading, so
+    turn tolerance doesn't leak into leg direction (see that docstring).
+
+    Every exit path emits one `LEG <name>: ...` telemetry line (commanded vs
+    estimated distance, elapsed, mode history, mean sway trim, exit reason) —
+    one pool run of these is a full calibration dataset.
 
     forward_m: +ahead in the held heading. lateral_m: +right (course A/D set the
     value upstream). Best-effort: succeeds on arrival, on timeout, or immediately
@@ -316,14 +411,19 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
         self.target_classes = set(target_classes) if target_classes else None
         self.confidence = confidence
         self.start_time = None
-        self.target = None          # world (x, y) goal ('world' mode only)
-        self.dr_duration = None     # timed drive length ('timed' mode only)
+        self.target = None          # world (x, y) goal (diagonal 'zed' legs only)
+        self.mode = None            # None (zero offset) | 'zed' | 'dr'
+        self.mode_history = 'none'  # e.g. 'zed', 'zed>dr@1.4m', 'dr' — for the LEG line
+        self.anchor = None          # ZED position at leg start
+        self.axis = None            # ZED-world unit vector of the leg direction
+        self.body_dir = (1.0, 0.0)  # unit drive direction in (surge, sway)
+        self.last_s = 0.0           # last good along-track progress (m)
+        self.mps = 0.4
+        self.dr_start_time = None   # when open-loop driving began
+        self.dr_duration = None     # open-loop drive length (s)
+        self.dr_base_s = 0.0        # progress already banked when 'dr' began
         self.dr_surge = 0.0
         self.dr_sway = 0.0
-        # 'zed'   = closed-loop to a world target — a literal port of the
-        #           pool-proven pidtest surge loop (see initialise)
-        # 'timed' = open-loop dead reckon; None = zero offset, nothing to do
-        self.mode = None
         self.pure_forward = False
         self.companion_yaw_pid = None
         self.start_pos = None
@@ -331,11 +431,17 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
         self.effective_timeout = timeout
         self._locked_heading = None
         self._locked_track = None
+        self._sway_sum = 0.0        # telemetry: mean sway trim over the leg
+        self._tick_n = 0
+        self._cruise_v = []         # mps autocal: per-tick speed samples at saturation
+        self._prev_s = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.CURRENT_POSE, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.CURRENT_HEADING, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.INTENDED_HEADING, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.USE_ODOMETRY, access=py_trees.common.Access.READ)
-        self.blackboard.register_key(key=bb.DEAD_RECKON_MPS, access=py_trees.common.Access.READ)
+        # WRITE (which includes read) — mps autocal updates this key.
+        self.blackboard.register_key(key=bb.DEAD_RECKON_MPS, access=py_trees.common.Access.WRITE)
         self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
 
@@ -344,17 +450,27 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
         self.start_time = pytime.time()
         self.last_time = self.start_time
         self.target = None
-        self.dr_duration = None
         self.mode = None
+        self.mode_history = 'none'
         self.pure_forward = False
         self.start_pos = None
+        self.anchor = None
+        self.axis = None
+        self.last_s = 0.0
+        self.dr_start_time = None
+        self.dr_duration = None
+        self.dr_base_s = 0.0
         self.effective_timeout = self.timeout
+        self._locked_track = None
+        self._sway_sum = 0.0
+        self._tick_n = 0
+        self._cruise_v = []
+        self._prev_s = None
         node = self.blackboard.get(bb.ROS_NODE)
-        self._locked_heading = lock_heading(node)
-        # The line this leg drives down — held on the sway axis exactly like the
-        # heading is held on the yaw axis (see sway_hold). Only pure-forward legs
-        # use it; a lateral leg's own sway PID already owns that axis.
-        self._locked_track = lock_track(node, self.blackboard)
+        # Hold the INTENDED course heading (threaded through the blackboard by
+        # the preceding turn) rather than wherever the nose happens to point —
+        # see resolve_course_heading for why.
+        self._locked_heading, hd_src = resolve_course_heading(node, self.blackboard)
         # Fresh position PIDs each leg (output clamped to the speed cap) — the
         # same PIDController + clamp arrangement as pidtest's main axis.
         self.surge_pid = PIDController(self.kp, self.ki, self.kd,
@@ -372,52 +488,83 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
         self.leg_mag = mag
         if mag < 1e-6:
             return  # zero offset — update() succeeds immediately
+        self.body_dir = (self.forward_m / mag, self.lateral_m / mag)
 
         # Bound the leg by its DISTANCE: 3x the nominal travel time (min 8 s).
         # The flat 45 s default let a misbehaving 2 m leg grind against a wall
         # for most of a minute before giving up.
-        mps = read_dead_reckon_mps(self.blackboard)
+        self.mps = read_dead_reckon_mps(self.blackboard)
         self.effective_timeout = min(
-            self.timeout, max(8.0, 3.0 * mag / max(mps, 1e-3)))
+            self.timeout, max(8.0, 3.0 * mag / max(self.mps, 1e-3)))
 
         use_odom = read_use_odometry(self.blackboard)
+        pose = None
         if use_odom:
             try:
                 pose = self.blackboard.get(bb.CURRENT_POSE)
             except KeyError:
                 pose = None
-            # Yaw from the ZED pose itself, NOT the IMU — see pose_yaw().
-            yaw = pose_yaw(pose)
-            if pose is not None and yaw is not None:
-                # Literal pidtest step: world target = pos + offset rotated by
-                # the ZED pose's own yaw (pidtest builds the same thing from
-                # its auto-calibrated imu+frame_offset heading). Pure-forward
-                # legs behave exactly like a pidtest surge step: signed
-                # body-projected error, NO sway ever commanded.
-                p = pose.pose.pose.position
-                self.start_pos = (p.x, p.y)
-                cos_y, sin_y = math.cos(yaw), math.sin(yaw)
-                wx = self.forward_m * cos_y - self.lateral_m * sin_y
-                wy = self.forward_m * sin_y + self.lateral_m * cos_y
+        # Yaw from the ZED pose itself, NOT the IMU — see pose_yaw().
+        yaw = pose_yaw(pose)
+        if use_odom and pose is not None and yaw is not None and odom_is_fresh(node):
+            p = pose.pose.pose.position
+            self.start_pos = (p.x, p.y)
+            self.anchor = (p.x, p.y)
+            cos_y, sin_y = math.cos(yaw), math.sin(yaw)
+            wx = self.forward_m * cos_y - self.lateral_m * sin_y
+            wy = self.forward_m * sin_y + self.lateral_m * cos_y
+            # The leg's fixed ZED-world axis: locked at start so progress is a
+            # scalar along it — mid-leg ZED yaw wander can't bend the leg.
+            self.axis = (wx / mag, wy / mag)
+            self.pure_forward = abs(self.lateral_m) < 1e-6
+            if self.pure_forward:
+                # Cross-track held by sway_hold against this same anchor line.
+                self._locked_track = (p.x, p.y, yaw)
+            else:
+                # Diagonal legs keep the original 2-D world-target PID.
                 self.target = (p.x + wx, p.y + wy)
-                self.pure_forward = abs(self.lateral_m) < 1e-6
-                self.mode = 'zed'
-                node.get_logger().info(
-                    f'{self.name}: ZED transit fwd={self.forward_m:.1f} '
-                    f'lat={self.lateral_m:.1f}m'
-                    + (' (pidtest surge law)' if self.pure_forward else '')
-                    + f' (timeout {self.effective_timeout:.0f}s)')
-                return
+            self.mode = 'zed'
+            self.mode_history = 'zed'
+            node.get_logger().info(
+                f'{self.name}: ZED transit fwd={self.forward_m:.1f} '
+                f'lat={self.lateral_m:.1f}m'
+                + (' (along-track law)' if self.pure_forward else '')
+                + f', heading={hd_src}'
+                + f' (timeout {self.effective_timeout:.0f}s)')
+            return
 
-        # Dead-reckon mode (or odometry requested but unavailable): drive the
-        # offset direction open-loop for distance/mps seconds.
-        self.mode = 'timed'
-        self.dr_duration = mag / max(mps, 1e-3)
-        self.dr_surge = self.speed * self.forward_m / mag
-        self.dr_sway = self.speed * self.lateral_m / mag
-        node.get_logger().info(
-            f'{self.name}: dead-reckon transit fwd={self.forward_m:.1f} '
-            f'lat={self.lateral_m:.1f}m over {self.dr_duration:.1f}s @ {mps:.2f}m/s')
+        # No trustworthy ZED at leg start (dead_reckon mode, or odometry
+        # requested but missing/stale) — the whole leg is open-loop.
+        self._enter_dr(node, base_s=0.0,
+                       reason=('movement_mode dead_reckon' if not use_odom
+                               else 'no fresh ZED odometry at leg start'),
+                       expected=not use_odom)
+
+    def _enter_dr(self, node, base_s, reason, expected=False):
+        """Switch to open-loop timed driving for the REMAINING distance.
+
+        base_s = along-track progress already banked (from ZED, before it went
+        stale). The old code had no mid-leg fallback at all: ZED dying mid-leg
+        silently truncated the leg where it stood, and every later leg started
+        from the wrong place. Once demoted, a leg never re-promotes to 'zed' —
+        a recovering ZED that re-anchors mid-leg with a jumped pose would be
+        worse than finishing the leg on the clock.
+        """
+        remaining = max(0.0, self.leg_mag - base_s)
+        self.dr_base_s = base_s
+        self.dr_duration = remaining / max(self.mps, 1e-3)
+        self.dr_start_time = pytime.time()
+        self.dr_surge = self.speed * self.body_dir[0]
+        self.dr_sway = self.speed * self.body_dir[1]
+        if self.mode == 'zed':
+            self.mode_history += f'>dr@{base_s:.1f}m'
+            self._locked_track = None   # position no longer trusted
+        else:
+            self.mode_history = 'dr'
+        self.mode = 'dr'
+        log = node.get_logger().info if expected else node.get_logger().warn
+        log(f'{self.name}: open-loop dead reckon — remaining {remaining:.1f}m '
+            f'over {self.dr_duration:.1f}s @ {self.mps:.2f}m/s ({reason})')
 
     def update(self):
         from hightide_interfaces.msg import ThrusterCommand
@@ -427,9 +574,8 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
         if self.mode is None:
             return py_trees.common.Status.SUCCESS
         if (pytime.time() - self.start_time) > self.effective_timeout:
-            node.get_logger().warn(f'{self.name}: transit timed out — proceeding')
             node.cmd_pub.publish(ThrusterCommand())
-            return py_trees.common.Status.SUCCESS
+            return self._finish(node, 'TIMED OUT — proceeding')
 
         # Vision hand-off: the instant the next prop is in view, stop transiting
         # and let the task's own search/align take over (preset distance is just a
@@ -444,89 +590,192 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
                     if (det.class_name in self.target_classes
                             and det.confidence > self.confidence):
                         node.cmd_pub.publish(ThrusterCommand())
-                        node.get_logger().info(
-                            f'{self.name}: {det.class_name} in view — handing off to vision')
-                        return py_trees.common.Status.SUCCESS
-
-        # ---- Dead-reckon (open-loop timed) ----
-        if self.mode == 'timed':
-            if (pytime.time() - self.start_time) >= self.dr_duration:
-                node.cmd_pub.publish(ThrusterCommand())
-                node.get_logger().info(f'{self.name}: dead-reckon leg complete')
-                return py_trees.common.Status.SUCCESS
-            cmd = ThrusterCommand()
-            cmd.header.stamp = node.get_clock().now().to_msg()
-            cmd.surge = self.dr_surge
-            cmd.sway = self.dr_sway
-            cmd.yaw = yaw_hold(node, self._locked_heading)
-            node.cmd_pub.publish(cmd)
-            return py_trees.common.Status.RUNNING
-
-        # ---- ZED mode: the pidtest surge loop, ported verbatim ----
-        from hightide_navigation import normalize_angle
-        try:
-            current = self.blackboard.get(bb.CURRENT_POSE)
-        except KeyError:
-            current = None
-        yaw = pose_yaw(current)
-        if current is None or yaw is None:
-            node.cmd_pub.publish(ThrusterCommand())   # lost odom mid-leg — stop, best effort
-            return py_trees.common.Status.SUCCESS
-        pos = current.pose.pose.position
-
-        # Overshoot guard: if we've physically moved well past the leg length
-        # the target estimate is bad (odometry drift/jump) — stop chasing it.
-        traveled = math.hypot(pos.x - self.start_pos[0], pos.y - self.start_pos[1])
-        if traveled > 1.5 * self.leg_mag + 0.5:
-            node.cmd_pub.publish(ThrusterCommand())
-            node.get_logger().warn(
-                f'{self.name}: traveled {traveled:.1f}m on a {self.leg_mag:.1f}m '
-                'leg — bad odometry? stopping here')
-            return py_trees.common.Status.SUCCESS
-
-        # pidtest's _measure(): world error projected onto the body axes with
-        # the current ZED-frame heading. e_surge is SIGNED, so an overshoot
-        # drives back instead of latching done.
-        dx = self.target[0] - pos.x
-        dy = self.target[1] - pos.y
-        cos_y, sin_y = math.cos(yaw), math.sin(yaw)
-        e_surge = dx * cos_y + dy * sin_y
-        e_sway = -dx * sin_y + dy * cos_y
-
-        done = (abs(e_surge) < self.pos_tol if self.pure_forward
-                else math.hypot(dx, dy) < self.pos_tol)
-        if done:
-            node.cmd_pub.publish(ThrusterCommand())
-            node.get_logger().info(f'{self.name}: reached transit target')
-            return py_trees.common.Status.SUCCESS
+                        return self._finish(
+                            node, f'{det.class_name} in view — vision hand-off')
 
         now = pytime.time()
         dt = now - self.last_time
         self.last_time = now
 
+        if self.mode == 'zed':
+            status = self._tick_zed(node, dt)
+            if status is not None:
+                return status
+            # status None = ZED went stale THIS tick and _enter_dr already ran;
+            # fall through and drive the first open-loop tick immediately.
+
+        # ---- Open-loop dead reckon (from the start, or after a demotion) ----
+        if (pytime.time() - self.dr_start_time) >= self.dr_duration:
+            node.cmd_pub.publish(ThrusterCommand())
+            return self._finish(node, 'dead-reckon leg complete')
         cmd = ThrusterCommand()
         cmd.header.stamp = node.get_clock().now().to_msg()
-        cmd.surge = self.surge_pid.compute(e_surge, dt)
-        # pidtest never commands sway on a surge run, and neither did we — but
-        # pidtest ran a short step in still water, while a competition leg is
-        # long enough for pool waves to push the sub metres off its line, and a
-        # pure-forward leg has nothing else watching the sway axis. So hold the
-        # line with the gentle, deadbanded sway_hold PD (NOT the surge-strength
-        # position PID) — same treatment the yaw axis already gets. Lateral legs
-        # are unchanged: their own sway PID already owns that axis.
-        cmd.sway = (sway_hold(node, self.blackboard, self._locked_track)
-                    if self.pure_forward else self.sway_pid.compute(e_sway, dt))
-        # pidtest's companion stabilizer, verbatim:
-        #   yaw_error = ref_yaw - imu_heading; cmd.yaw = sign * pid(yaw_error)
-        imu_now = getattr(node, 'current_heading', None)
-        if self._locked_heading is not None and imu_now is not None:
-            yaw_err = normalize_angle(self._locked_heading - imu_now)
-            y = (float(getattr(node, 'yaw_hold_sign', -1.0))
-                 * self.companion_yaw_pid.compute(yaw_err, dt))
-            lim = float(getattr(node, 'yaw_hold_limit', 1.0))
-            cmd.yaw = max(-lim, min(lim, y))
+        cmd.surge = self.dr_surge
+        cmd.sway = self.dr_sway
+        cmd.yaw = self._yaw_cmd(node, dt)
+        self._sway_sum += cmd.sway
+        self._tick_n += 1
         node.cmd_pub.publish(cmd)
         return py_trees.common.Status.RUNNING
+
+    def _tick_zed(self, node, dt):
+        """One closed-loop tick. Returns a Status, or None if ZED just went
+        stale and the leg demoted to 'dr' (caller drives the same tick)."""
+        from hightide_interfaces.msg import ThrusterCommand
+        try:
+            current = self.blackboard.get(bb.CURRENT_POSE)
+        except KeyError:
+            current = None
+        yaw = pose_yaw(current)
+        if current is None or yaw is None or not odom_is_fresh(node):
+            # ZED stale/frozen mid-leg. Finish the remaining distance on the
+            # clock instead of truncating the leg where it stood.
+            self._enter_dr(node, base_s=self.last_s,
+                           reason='ZED odometry went stale/frozen mid-leg')
+            return None
+        pos = current.pose.pose.position
+
+        rel_x = pos.x - self.anchor[0]
+        rel_y = pos.y - self.anchor[1]
+        # Progress = displacement projected on the leg's FIXED start axis.
+        s = rel_x * self.axis[0] + rel_y * self.axis[1]
+        self.last_s = s
+
+        # Overshoot guard: if we've physically moved well past the leg length
+        # the target estimate is bad (odometry drift/jump) — stop chasing it.
+        traveled = math.hypot(rel_x, rel_y)
+        if traveled > 1.5 * self.leg_mag + 0.5:
+            node.cmd_pub.publish(ThrusterCommand())
+            node.get_logger().warn(
+                f'{self.name}: traveled {traveled:.1f}m on a {self.leg_mag:.1f}m '
+                'leg — bad odometry? stopping here')
+            return self._finish(node, 'overshoot guard')
+
+        cmd = ThrusterCommand()
+        cmd.header.stamp = node.get_clock().now().to_msg()
+        cmd.yaw = self._yaw_cmd(node, dt)
+
+        if self.pure_forward:
+            # FOG-primary along-track law: 1-D signed error on the fixed axis
+            # (an overshoot drives back, like pidtest's signed e_surge), immune
+            # to mid-leg ZED yaw wander bending the trajectory.
+            e = self.leg_mag - s
+            if abs(e) < self.pos_tol:
+                node.cmd_pub.publish(ThrusterCommand())
+                return self._finish(node, 'arrived')
+            out = self.surge_pid.compute(e, dt)
+            cmd.surge = out
+            # Cross-track held by the gentle, deadbanded sway_hold PD (NOT the
+            # surge-strength position PID) — waves get trimmed out, the surge
+            # axis stays owned by the along-track law.
+            cmd.sway = sway_hold(node, self.blackboard, self._locked_track)
+            # mps autocal sampling: per-tick speed while the PID is pinned at
+            # the cap (the only moments the sub is actually driven AT the
+            # thrust that dead_reckon_mps is defined for), with a sane-delta
+            # gate against ZED jumps. Spin-up samples are collected too and
+            # rejected statistically in _maybe_update_mps (75th percentile).
+            if (self._prev_s is not None and 0.0 < dt < 0.5
+                    and abs(out) >= 0.95 * self.speed):
+                ds = s - self._prev_s
+                if 0.0 <= ds <= 1.2 * dt:
+                    self._cruise_v.append(ds / dt)
+            self._prev_s = s
+        else:
+            # Diagonal legs: the original pidtest world-target PID, verbatim —
+            # world error projected onto the body axes with the current yaw.
+            dx = self.target[0] - pos.x
+            dy = self.target[1] - pos.y
+            if math.hypot(dx, dy) < self.pos_tol:
+                node.cmd_pub.publish(ThrusterCommand())
+                return self._finish(node, 'arrived')
+            cos_y, sin_y = math.cos(yaw), math.sin(yaw)
+            e_surge = dx * cos_y + dy * sin_y
+            e_sway = -dx * sin_y + dy * cos_y
+            cmd.surge = self.surge_pid.compute(e_surge, dt)
+            cmd.sway = self.sway_pid.compute(e_sway, dt)
+
+        self._sway_sum += cmd.sway
+        self._tick_n += 1
+        node.cmd_pub.publish(cmd)
+        return py_trees.common.Status.RUNNING
+
+    def _yaw_cmd(self, node, dt):
+        """pidtest's companion heading stabilizer, verbatim:
+        yaw_error = ref_yaw - imu_heading; cmd.yaw = sign * pid(yaw_error)."""
+        from hightide_navigation import normalize_angle
+        imu_now = getattr(node, 'current_heading', None)
+        if self._locked_heading is None or imu_now is None:
+            return 0.0
+        yaw_err = normalize_angle(self._locked_heading - imu_now)
+        y = (float(getattr(node, 'yaw_hold_sign', -1.0))
+             * self.companion_yaw_pid.compute(yaw_err, dt))
+        lim = float(getattr(node, 'yaw_hold_limit', 1.0))
+        return max(-lim, min(lim, y))
+
+    def _finish(self, node, reason):
+        """Every exit path funnels through here: one LEG telemetry line, plus
+        the mps autocal update on a clean arrival. One pool run of LEG lines is
+        a complete calibration dataset (commanded vs measured distance, times,
+        mode demotions, mean lateral trim)."""
+        elapsed = pytime.time() - self.start_time
+        if self.mode == 'dr' and self.dr_start_time is not None:
+            run = min(pytime.time() - self.dr_start_time, self.dr_duration or 0.0)
+            est = self.dr_base_s + run * self.mps
+        else:
+            est = self.last_s
+        zed_disp = 'n/a'
+        if self.anchor is not None and odom_is_fresh(node):
+            try:
+                pose = self.blackboard.get(bb.CURRENT_POSE)
+            except KeyError:
+                pose = None
+            if pose is not None:
+                p = pose.pose.pose.position
+                zed_disp = (f'{math.hypot(p.x - self.anchor[0], p.y - self.anchor[1]):.2f}m')
+        sway_avg = self._sway_sum / self._tick_n if self._tick_n else 0.0
+        node.get_logger().info(
+            f'LEG {self.name}: cmd fwd={self.forward_m:.2f} lat={self.lateral_m:.2f}m | '
+            f'progress~{est:.2f}m | zed_disp={zed_disp} | {elapsed:.1f}s | '
+            f'mode={self.mode_history} | sway_avg={sway_avg:+.2f} | {reason}')
+        if reason == 'arrived':
+            self._maybe_update_mps(node)
+        return py_trees.common.Status.SUCCESS
+
+    def _maybe_update_mps(self, node):
+        """mps autocal: EMA today's measured cruise speed into DEAD_RECKON_MPS.
+
+        Only from clean data: pure-forward legs whose speed cap IS the transit
+        thrust that dead_reckon_mps is defined at, with ≥1 s of samples taken
+        while the PID was pinned at that cap. The cruise speed is the 75th
+        PERCENTILE of the per-tick samples: saturation starts during spin-up
+        (those samples read low) and ZED noise scatters both ways, so the
+        upper quartile lands on steady cruise without needing a hand-tuned
+        spin-up exclusion window. Note the PID only saturates while more than
+        speed/kp metres of error remain (0.6/0.2 = 3 m at the defaults), so
+        only legs longer than that ever contribute — short legs just don't
+        calibrate, which is the safe direction.
+
+        The payoff: when ZED drops out later in the run, the timed fallback
+        uses today's battery/trim/depth speed, not a yaml constant measured on
+        some other day.
+        """
+        if not bool(getattr(node, 'mps_autocal_enabled', True)):
+            return
+        if not self.pure_forward or len(self._cruise_v) < 20:
+            return
+        ref = getattr(node, 'transit_thrust', None)
+        if ref is None or abs(self.speed - float(ref)) > 0.02:
+            return
+        v = sorted(self._cruise_v)[int(0.75 * len(self._cruise_v))]
+        if not (0.05 <= v <= 1.5):
+            return
+        alpha = float(getattr(node, 'mps_autocal_alpha', 0.3))
+        old = read_dead_reckon_mps(self.blackboard)
+        new = old + alpha * (v - old)
+        self.blackboard.set(bb.DEAD_RECKON_MPS, new)
+        node.get_logger().info(
+            f'{self.name}: mps autocal — {len(self._cruise_v)} cruise samples, '
+            f'p75 {v:.2f}m/s; dead_reckon_mps {old:.2f} -> {new:.2f}')
 
 
 class PublishThrusterCommand(py_trees.behaviour.Behaviour):

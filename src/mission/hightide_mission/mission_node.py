@@ -53,7 +53,7 @@ from hightide_mission.behaviors.torpedoes import create_torpedoes_subtree
 from hightide_mission.behaviors.octagon import create_octagon_subtree
 from hightide_mission.behaviors.return_home import create_return_home_subtree
 from hightide_mission.behaviors.common import (
-    LogBehavior, CallTriggerService, DeadReckonTransit)
+    LogBehavior, CallTriggerService, DeadReckonTransit, odom_is_fresh)
 
 
 class MissionNode(Node):
@@ -208,6 +208,26 @@ class MissionNode(Node):
         self.declare_parameter('sway_hold_sign', 1.0)
         self.declare_parameter('sway_hold_deadband_m', 0.1)
 
+        # ---- ZED trust & dead-reckon consistency ----
+        # odom_stale_sec: a ZED pose whose VALUE hasn't changed within this
+        # window (stopped publishing OR frozen tracking — _odom_cb stamps value
+        # changes only) is not trusted: transits demote to open-loop for the
+        # remaining distance, sway_hold/lock_track go inert. The nav tier
+        # manager's DEAD_RECKONING demotion is honored the same way.
+        self.declare_parameter('odom_stale_sec', 0.7)
+        # Straight legs hold the INTENDED course heading written by the
+        # preceding turn — unless it's further than this from the nose
+        # (stale intent after a sweep). See common.resolve_course_heading.
+        self.declare_parameter('intended_heading_max_dev_deg', 30.0)
+        # Turns keep PIDing inside tolerance for this long before declaring
+        # done, so the next leg doesn't snapshot heading/ZED-anchor mid-swing.
+        self.declare_parameter('heading_turn_settle_sec', 1.0)
+        # mps autocal: transits measure their own cruise m/s on healthy-ZED
+        # legs and EMA it into the live DEAD_RECKON_MPS (alpha = blend rate),
+        # so a later ZED dropout dead-reckons with TODAY's measured speed.
+        self.declare_parameter('mps_autocal_enabled', True)
+        self.declare_parameter('mps_autocal_alpha', 0.3)
+
         self.declare_parameter('movement_mode', 'zed')             # 'zed' or 'dead_reckon'
         # transit_thrust = the POWER (normalized -1..1 cmd) the transit legs drive
         # at, in BOTH modes. dead_reckon_mps = the actual speed the vehicle moves
@@ -315,6 +335,13 @@ class MissionNode(Node):
         self.sway_hold_limit = float(self.get_parameter('sway_hold_limit').value)
         self.sway_hold_sign = float(self.get_parameter('sway_hold_sign').value)
         self.sway_hold_deadband_m = float(self.get_parameter('sway_hold_deadband_m').value)
+        self.odom_stale_sec = float(self.get_parameter('odom_stale_sec').value)
+        self.intended_heading_max_dev_deg = float(
+            self.get_parameter('intended_heading_max_dev_deg').value)
+        self.heading_turn_settle = float(
+            self.get_parameter('heading_turn_settle_sec').value)
+        self.mps_autocal_enabled = bool(self.get_parameter('mps_autocal_enabled').value)
+        self.mps_autocal_alpha = float(self.get_parameter('mps_autocal_alpha').value)
         self.add_on_set_parameters_callback(self._on_set_parameters)
 
         # Movement mode → blackboard flag the nav behaviors read.
@@ -428,6 +455,15 @@ class MissionNode(Node):
         # this for active yaw-hold. None until the first IMU message arrives.
         self.current_heading = None
 
+        # ZED liveness (common.odom_is_fresh reads these): odom_rx_time is the
+        # wall-clock of the last odom message whose pose VALUE changed — a ZED
+        # republishing a bit-identical pose (frozen tracking) goes stale here
+        # exactly like one that stopped publishing. nav_tier_is_dr mirrors the
+        # nav tier manager's demotion to DEAD_RECKONING.
+        self.odom_rx_time = None
+        self._last_odom_sig = None
+        self.nav_tier_is_dr = False
+
         # Safe-shutdown state machine: None → 'surfacing' → 'disarming' → 'done'
         self._shutdown_state = None
         self._shutdown_start = None
@@ -473,11 +509,13 @@ class MissionNode(Node):
             if p.name in ('yaw_hold_kp', 'yaw_hold_kd',
                           'yaw_hold_limit', 'yaw_hold_sign',
                           'sway_hold_kp', 'sway_hold_kd', 'sway_hold_limit',
-                          'sway_hold_sign', 'sway_hold_deadband_m'):
+                          'sway_hold_sign', 'sway_hold_deadband_m',
+                          'odom_stale_sec', 'intended_heading_max_dev_deg',
+                          'mps_autocal_alpha'):
                 setattr(self, p.name, float(p.value))
                 self.get_logger().info(f'{p.name} -> {float(p.value)}')
-            elif p.name == 'sway_hold_enabled':
-                self.sway_hold_enabled = bool(p.value)
+            elif p.name in ('sway_hold_enabled', 'mps_autocal_enabled'):
+                setattr(self, p.name, bool(p.value))
                 self.get_logger().info(f'{p.name} -> {bool(p.value)}')
         return SetParametersResult(successful=True)
 
@@ -512,7 +550,8 @@ class MissionNode(Node):
                                      timeout=self.initial_turn_timeout,
                                      kp=self.heading_turn_kp, ki=self.heading_turn_ki,
                                      kd=self.heading_turn_kd,
-                                     output_limit=self.heading_turn_output_limit))
+                                     output_limit=self.heading_turn_output_limit,
+                                     settle_sec=self.heading_turn_settle))
         else:
             # Legacy opening maneuver (coin-flip disabled): optional fixed turn
             # + advance toward the gate.
@@ -524,7 +563,8 @@ class MissionNode(Node):
                                 tolerance=3.0, timeout=self.initial_turn_timeout,
                                 kp=self.heading_turn_kp, ki=self.heading_turn_ki,
                                 kd=self.heading_turn_kd,
-                                output_limit=self.heading_turn_output_limit))
+                                output_limit=self.heading_turn_output_limit,
+                                settle_sec=self.heading_turn_settle))
             if self.initial_forward_m > 0.01:
                 predive_children.append(
                     DeadReckonTransit('InitialAdvance', forward_m=self.initial_forward_m,
@@ -568,7 +608,8 @@ class MissionNode(Node):
                                timeout=self.slalom_turn_timeout,
                                kp=self.heading_turn_kp, ki=self.heading_turn_ki,
                                kd=self.heading_turn_kd,
-                               output_limit=self.heading_turn_output_limit)
+                               output_limit=self.heading_turn_output_limit,
+                               settle_sec=self.heading_turn_settle)
 
         def forward_leg(name, forward_m):
             return DeadReckonTransit(name, forward_m=forward_m,
@@ -593,7 +634,8 @@ class MissionNode(Node):
                                  timeout=self.slalom_turn_timeout,
                                  kp=self.heading_turn_kp, ki=self.heading_turn_ki,
                                  kd=self.heading_turn_kd,
-                                 output_limit=self.heading_turn_output_limit),
+                                 output_limit=self.heading_turn_output_limit,
+                                 settle_sec=self.heading_turn_settle),
         ]
 
         # Build the task list conditionally on the run_* toggles — a disabled
@@ -729,10 +771,14 @@ class MissionNode(Node):
         if self.current_heading is None:
             issues.append('no IMU heading (yaw-hold + turns disabled)')
         try:
-            if self.blackboard.get(bb.CURRENT_POSE) is None:
-                issues.append('no ZED odometry (ZED-mode moves fall back to timed)')
+            have_pose = self.blackboard.get(bb.CURRENT_POSE) is not None
         except KeyError:
+            have_pose = False
+        if not have_pose:
             issues.append('no ZED odometry (ZED-mode moves fall back to timed)')
+        elif not odom_is_fresh(self):
+            issues.append('ZED odometry STALE/frozen or nav tier DR '
+                          '(legs demote to open-loop dead reckon)')
         try:
             det = self.blackboard.get(bb.DETECTIONS)
             if det is None or len(det.detections) == 0:
@@ -819,6 +865,16 @@ class MissionNode(Node):
         self.blackboard.set(bb.DETECTIONS, msg)
 
     def _odom_cb(self, msg):
+        # Stamp freshness ONLY when the pose value changes: real VO jitters at
+        # the millimetre level even holding station, so bit-identical repeats
+        # mean tracking is frozen — and a frozen pose must read as stale or
+        # every ZED-mode leg PIDs a constant error at full clamp (see
+        # common.odom_is_fresh).
+        p = msg.pose.pose.position
+        sig = (p.x, p.y, p.z)
+        if sig != self._last_odom_sig:
+            self._last_odom_sig = sig
+            self.odom_rx_time = pytime.time()
         self.blackboard.set(bb.CURRENT_POSE, msg)
 
     def _depth_cb(self, msg):
@@ -843,6 +899,14 @@ class MissionNode(Node):
 
     def _nav_tier_cb(self, msg):
         self.blackboard.set(bb.NAV_TIER, msg.current_tier)
+        # Attribute mirror for common.odom_is_fresh: the tier manager demoting
+        # to DEAD_RECKONING (covariance blowup / its own staleness check) vetoes
+        # ZED trust even while poses keep arriving.
+        was = self.nav_tier_is_dr
+        self.nav_tier_is_dr = (msg.current_tier == NavigationTier.DEAD_RECKONING)
+        if self.nav_tier_is_dr != was:
+            log = self.get_logger().warn if self.nav_tier_is_dr else self.get_logger().info
+            log(f'Nav tier -> {"DEAD_RECKONING (ZED not trusted)" if self.nav_tier_is_dr else "ZED trusted again"}')
 
 
 def main(args=None):

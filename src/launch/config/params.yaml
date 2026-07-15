@@ -148,6 +148,30 @@ mission_node:
     sway_hold_sign: 1.0        # flip to -1.0 if the correction pushes the wrong way
     sway_hold_deadband_m: 0.1  # ignore cross-track error under this (m)
 
+    # ---- ZED trust & dead-reckon consistency ----
+    # odom_stale_sec: how old (or how long FROZEN — identical repeated poses
+    # count as frozen, the classic murky-water ZED failure) the ZED pose may be
+    # before it stops being trusted. Once untrusted, a transit leg finishes its
+    # REMAINING distance open-loop on the clock instead of PIDing a dead pose
+    # into a wall, and sway_hold stops trimming. The nav tier manager's
+    # DEAD_RECKONING demotion is honored the same way.
+    odom_stale_sec: 0.7
+    # Straight legs hold the INTENDED heading written by the preceding turn
+    # (kills per-turn tolerance error accumulating down the course) — unless
+    # the intent is further than this from the nose (stale after a yaw sweep).
+    intended_heading_max_dev_deg: 30.0
+    # Turns keep PIDing INSIDE tolerance for this long before declaring done,
+    # so the next leg doesn't lock its heading / ZED anchor mid-swing.
+    # 0.0 restores the old cut-thrust-immediately behavior.
+    heading_turn_settle_sec: 1.0
+    # mps autocal: while ZED is healthy, every straight leg measures its own
+    # cruise speed at transit_thrust and blends it into the LIVE dead_reckon
+    # speed (alpha = blend weight per leg). A later ZED dropout then
+    # dead-reckons with TODAY's measured speed (battery/trim/depth included),
+    # not the yaml constant below. Watch for 'mps autocal' lines in the log.
+    mps_autocal_enabled: true
+    mps_autocal_alpha: 0.3
+
     # ---- Movement mode: ZED odometry vs open-loop dead reckoning ----
     # 'zed'        = measure travel with ZED odometry (accurate, closed-loop).
     # 'dead_reckon'= open-loop timed drive (distance / dead_reckon_mps) — use if

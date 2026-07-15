@@ -114,7 +114,7 @@ class YawToRecordedHeading(py_trees.behaviour.Behaviour):
 
     def __init__(self, name='YawToRecordedHeading', heading_key=None,
                  offset_deg=0.0, tolerance_deg=3.0, timeout=20.0,
-                 kp=0.225, ki=0.0, kd=0.2, output_limit=0.6):
+                 kp=0.225, ki=0.0, kd=0.2, output_limit=0.6, settle_sec=1.0):
         super().__init__(name)
         self.heading_key = heading_key or bb.INITIAL_HEADING
         self.offset_deg = offset_deg
@@ -122,13 +122,19 @@ class YawToRecordedHeading(py_trees.behaviour.Behaviour):
         self.timeout = timeout
         self.kp, self.ki, self.kd = kp, ki, kd
         self.output_limit = output_limit
+        # Same settle-inside-tolerance hold as gate.HeadingTurn (see there) —
+        # keep PIDing for settle_sec so the following leg doesn't lock its
+        # heading / ZED anchor while the nose is still swinging.
+        self.settle_sec = settle_sec
         self.start_time = None
         self.last_t = None
         self.pid = None
         self.target_heading = None
+        self.settle_start = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.CURRENT_HEADING, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.INTENDED_HEADING, access=py_trees.common.Access.WRITE)
         self.blackboard.register_key(key=self.heading_key, access=py_trees.common.Access.READ)
 
     def initialise(self):
@@ -151,6 +157,12 @@ class YawToRecordedHeading(py_trees.behaviour.Behaviour):
         else:
             self.target_heading = normalize_angle(
                 recorded + math.radians(self.offset_deg))
+        self.settle_start = None
+        if self.target_heading is not None:
+            # Thread the intent: the next straight leg holds THIS heading
+            # (via common.resolve_course_heading), not wherever the turn
+            # actually stopped — turn tolerance stays out of leg direction.
+            self.blackboard.set(bb.INTENDED_HEADING, self.target_heading)
         node = self.blackboard.get(bb.ROS_NODE)
         if self.target_heading is None:
             node.get_logger().warn(
@@ -183,9 +195,22 @@ class YawToRecordedHeading(py_trees.behaviour.Behaviour):
 
         error_rad = normalize_angle(self.target_heading - current)
         if abs(math.degrees(error_rad)) <= self.tolerance_deg:
-            node.cmd_pub.publish(ThrusterCommand())
-            node.get_logger().info('Back on recorded heading')
-            return py_trees.common.Status.SUCCESS
+            if self.settle_sec <= 0.0:
+                node.cmd_pub.publish(ThrusterCommand())
+                node.get_logger().info('Back on recorded heading')
+                return py_trees.common.Status.SUCCESS
+            # Settle: hold inside tolerance for settle_sec, still PIDing so the
+            # D term damps the residual swing (see gate.HeadingTurn).
+            if self.settle_start is None:
+                self.settle_start = now
+            elif (now - self.settle_start) >= self.settle_sec:
+                node.cmd_pub.publish(ThrusterCommand())
+                node.get_logger().info(
+                    f'Back on recorded heading (residual '
+                    f'{math.degrees(error_rad):+.1f}°, settled {self.settle_sec:.1f}s)')
+                return py_trees.common.Status.SUCCESS
+        else:
+            self.settle_start = None
 
         dt = now - self.last_t
         self.last_t = now

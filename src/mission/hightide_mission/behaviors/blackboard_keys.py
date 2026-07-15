@@ -12,6 +12,12 @@ INITIAL_HEADING = 'initial_heading'
 # Heading recorded right before the slalom's yaw/forward/yaw/forward zigzag
 # (straight-ahead post-gate heading); the maneuver's final leg yaws back to it.
 SLALOM_START_HEADING = 'slalom_start_heading'
+# The course heading the sub is SUPPOSED to be on right now — written by every
+# deliberate turn (HeadingTurn / YawToRecordedHeading) with its TARGET heading.
+# Straight legs lock this instead of the live FOG heading (when plausibly close),
+# so a turn that stopped 3° short + settle swing doesn't bake its error into the
+# leg direction — see common.resolve_course_heading.
+INTENDED_HEADING = 'intended_heading'
 
 # Mission state
 CHOSEN_ROLE = 'chosen_role'       # 'survey_repair' or 'search_rescue'

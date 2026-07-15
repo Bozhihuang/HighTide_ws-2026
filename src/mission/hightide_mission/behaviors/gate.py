@@ -244,19 +244,26 @@ class HeadingTurn(py_trees.behaviour.Behaviour):
     """
 
     def __init__(self, name='HeadingTurn', degrees=180.0, tolerance=2.0, timeout=10.0,
-                 kp=0.225, ki=0.0, kd=0.2, output_limit=0.6):
+                 kp=0.225, ki=0.0, kd=0.2, output_limit=0.6, settle_sec=1.0):
         super().__init__(name)
         self.target_degrees_offset = degrees
         self.tolerance_deg = tolerance
         self.timeout = timeout
         self.kp, self.ki, self.kd = kp, ki, kd
         self.output_limit = output_limit
+        # Hold INSIDE tolerance, still PIDing, for this long before declaring
+        # done. The old cut-thrust-the-instant-we're-in-tolerance exit left the
+        # sub with residual yaw rate — the next leg then locked its heading (and
+        # snapshotted its ZED anchor) mid-swing. 0.0 restores the old behavior.
+        self.settle_sec = settle_sec
         self.start_time = None
         self.target_heading = None
+        self.settle_start = None
 
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.CURRENT_HEADING, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.INTENDED_HEADING, access=py_trees.common.Access.WRITE)
 
     def initialise(self):
         import time
@@ -277,7 +284,12 @@ class HeadingTurn(py_trees.behaviour.Behaviour):
         
         offset_rad = math.radians(self.target_degrees_offset)
         self.target_heading = normalize_angle(current_heading + offset_rad)
-        
+        self.settle_start = None
+        # Thread the intent: the next straight leg holds THIS heading (via
+        # resolve_course_heading), not wherever the turn actually stopped —
+        # so the turn tolerance can't leak into the leg direction.
+        self.blackboard.set(bb.INTENDED_HEADING, self.target_heading)
+
         node = self.blackboard.get(bb.ROS_NODE)
         node.get_logger().info(f'Turning by {self.target_degrees_offset}° to heading {math.degrees(self.target_heading):.1f}°')
         self.last_t = time.time()
@@ -304,12 +316,27 @@ class HeadingTurn(py_trees.behaviour.Behaviour):
         error_rad = normalize_angle(self.target_heading - current_heading)
 
         if abs(math.degrees(error_rad)) <= self.tolerance_deg:
-            # We have reached the heading — stop-on-exit so we don't coast past
-            node.cmd_pub.publish(ThrusterCommand())
-            node.get_logger().info(
-                f'{self.name}: reached target heading '
-                f'({math.degrees(self.target_heading):.1f}°)')
-            return py_trees.common.Status.SUCCESS
+            if self.settle_sec <= 0.0:
+                node.cmd_pub.publish(ThrusterCommand())
+                node.get_logger().info(
+                    f'{self.name}: reached target heading '
+                    f'({math.degrees(self.target_heading):.1f}°)')
+                return py_trees.common.Status.SUCCESS
+            # Settle: stay in tolerance CONTINUOUSLY for settle_sec, still
+            # PIDing the whole time so the D term actively damps the swing
+            # (cutting thrust here is what used to hand the next leg a nose
+            # that was still rotating). Swinging out of tolerance resets it.
+            if self.settle_start is None:
+                self.settle_start = now
+            elif (now - self.settle_start) >= self.settle_sec:
+                node.cmd_pub.publish(ThrusterCommand())
+                node.get_logger().info(
+                    f'{self.name}: reached {math.degrees(self.target_heading):.1f}° '
+                    f'(residual {math.degrees(error_rad):+.1f}°, settled '
+                    f'{self.settle_sec:.1f}s, total {now - self.start_time:.1f}s)')
+                return py_trees.common.Status.SUCCESS
+        else:
+            self.settle_start = None
 
         dt = now - self.last_t
         self.last_t = now
