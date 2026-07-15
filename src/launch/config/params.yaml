@@ -30,7 +30,7 @@ mission_node:
     # one tuned gain set. yaw_controller_node (a separate node/process) has its
     # own identical-by-default yaw_kp/ki/kd/yaw_output_limit — keep both in sync.
     heading_turn_kp: 0.2
-    heading_turn_ki: 0.0115
+    heading_turn_ki: 0.012
     heading_turn_kd: 0.005
     heading_turn_output_limit: 0.6
 
@@ -158,7 +158,7 @@ mission_node:
     sway_hold_kp: 0.2          # <<< TUNE IN POOL
     sway_hold_kd: 0.0         # <<< TUNE IN POOL
     sway_hold_limit: 0.2       # max lateral trim authority
-    sway_hold_sign: 1.0        # flip to -1.0 if the correction pushes the wrong way
+    sway_hold_sign: -1.0        # flip to -1.0 if the correction pushes the wrong way
     sway_hold_deadband_m: 0.1  # ignore cross-track error under this (m)
     sway_hold_max_yaw_err_deg: 8.0  # no lateral trim until the nose is within this of course
 
