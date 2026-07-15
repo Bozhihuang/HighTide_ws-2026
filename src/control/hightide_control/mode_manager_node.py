@@ -4,7 +4,7 @@ import time
 import rclpy
 from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.executors import MultiThreadedExecutor, ExternalShutdownException
+from rclpy.executors import MultiThreadedExecutor
 from std_srvs.srv import SetBool, Trigger
 from std_msgs.msg import Bool
 from mavros_msgs.msg import State, OverrideRCIn
@@ -322,75 +322,21 @@ class ModeManagerNode(Node):
             self.rc_hold_pub.publish(hold_off)
             time.sleep(0.02)
 
-    def disarm_on_shutdown(self):
-        """Directly disarm the FCU on process shutdown (Ctrl-C). This is the
-        authoritative disarm — mode_manager owns the MAVROS arming client, so
-        it doesn't depend on any other node still being alive (on a launch-wide
-        Ctrl-C every node gets SIGINT at once). Spins THIS node itself because
-        the executor has already stopped; bounded so it can't hang shutdown.
-        """
-        if not rclpy.ok():
-            self.get_logger().warn('ROS context already down — cannot disarm')
-            return
-        self.get_logger().warn('=== Ctrl-C: disarming FCU ===')
-        # Neutralize RC first (release any barrel-roll hold + zero channels).
-        try:
-            self._release_rc_hold()
-            neutral = OverrideRCIn()
-            neutral.channels = [1500] * 18
-            self.rc_pub.publish(neutral)
-        except Exception:
-            pass
-        if not self.arm_client.wait_for_service(timeout_sec=2.0):
-            self.get_logger().error('MAVROS arming service gone — cannot disarm on exit')
-            return
-        req = CommandBool.Request()
-        req.value = False
-        future = self.arm_client.call_async(req)
-        start = time.time()
-        while rclpy.ok() and not future.done() and (time.time() - start) < 4.0:
-            rclpy.spin_once(self, timeout_sec=0.1)
-        res = future.result() if future.done() else None
-        if res is not None and res.success:
-            self.get_logger().info('FCU DISARMED on Ctrl-C')
-        else:
-            self.get_logger().warn(
-                'Disarm on Ctrl-C not confirmed (FCU/MAVROS may already be down)')
-
 
 def main(args=None):
-    # Keep the ROS context alive through SIGINT so we can still command the
-    # disarm — rclpy's default handler would tear the context down first,
-    # leaving us unable to talk to MAVROS. With NO rclpy signal handling,
-    # Python's default SIGINT raises KeyboardInterrupt into spin() instead.
-    try:
-        from rclpy.signals import SignalHandlerOptions
-        rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
-    except (ImportError, TypeError):
-        rclpy.init(args=args)
-
+    rclpy.init(args=args)
     node = ModeManagerNode()
-
+    
     # Use MultiThreadedExecutor to allow state callback to run while service is waiting
     executor = MultiThreadedExecutor()
     executor.add_node(node)
-
+    
     try:
         executor.spin()
     except KeyboardInterrupt:
-        # Free the node from the (now-stopped) executor so disarm_on_shutdown
-        # can spin it manually to pump the arming service response.
-        executor.remove_node(node)
-        node.disarm_on_shutdown()
-    except ExternalShutdownException:
         pass
     finally:
         node.destroy_node()
-        try:
-            if rclpy.ok():
-                rclpy.shutdown()
-        except Exception:
-            pass
 
 
 if __name__ == '__main__':

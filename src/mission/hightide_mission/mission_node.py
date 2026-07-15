@@ -854,39 +854,6 @@ class MissionNode(Node):
                 self.tick_timer.cancel()
                 rclpy.shutdown()
 
-    def disarm_on_ctrl_c(self):
-        """Best-effort disarm on Ctrl-C via /hightide/arm. Spins THIS node
-        itself (the executor has stopped) and is bounded so it can't hang.
-        On a launch-wide Ctrl-C mode_manager_node self-disarms directly via
-        MAVROS; this covers running mission_node standalone against a live
-        mode_manager (and is harmless — disarming twice is idempotent)."""
-        try:
-            self.cmd_pub.publish(ThrusterCommand())   # stop motors first
-        except Exception:
-            pass
-        if not rclpy.ok():
-            return
-        client = self.create_client(SetBool, '/hightide/arm')
-        start = pytime.time()
-        while rclpy.ok() and not client.service_is_ready() and (pytime.time() - start) < 2.0:
-            rclpy.spin_once(self, timeout_sec=0.1)
-        if not client.service_is_ready():
-            self.get_logger().warn(
-                'arm service unavailable — cannot disarm from mission_node '
-                '(mode_manager should self-disarm)')
-            return
-        req = SetBool.Request()
-        req.data = False
-        future = client.call_async(req)
-        start = pytime.time()
-        while rclpy.ok() and not future.done() and (pytime.time() - start) < 6.0:
-            rclpy.spin_once(self, timeout_sec=0.1)
-        res = future.result() if future.done() else None
-        if res is not None and res.success:
-            self.get_logger().info('Disarmed on Ctrl-C')
-        else:
-            self.get_logger().warn('Disarm on Ctrl-C not confirmed')
-
     def _publish_mission_state(self):
         """Publish current mission state for monitoring."""
         msg = MissionState()
@@ -973,25 +940,13 @@ class MissionNode(Node):
 
 
 def main(args=None):
-    # Keep the ROS context alive through SIGINT (Ctrl-C) so we can still stop
-    # motors and request a disarm — rclpy's default handler tears the context
-    # down first. With NO rclpy signal handling, Python's default SIGINT raises
-    # KeyboardInterrupt into spin() with the context still valid.
-    try:
-        from rclpy.signals import SignalHandlerOptions
-        rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
-    except (ImportError, TypeError):
-        rclpy.init(args=args)
+    rclpy.init(args=args)
     node = MissionNode()
     executor = SingleThreadedExecutor()
     executor.add_node(node)
     try:
         executor.spin()
-    except KeyboardInterrupt:
-        node.get_logger().warn('Ctrl-C received — stopping motors and disarming')
-        executor.remove_node(node)   # free node so we can spin it manually
-        node.disarm_on_ctrl_c()
-    except ExternalShutdownException:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         # Emergency: stop all motors (context may already be down on clean exit)
@@ -1001,11 +956,6 @@ def main(args=None):
         except Exception:
             pass
         node.destroy_node()
-        try:
-            if rclpy.ok():
-                rclpy.shutdown()
-        except Exception:
-            pass
 
 if __name__ == '__main__':
     main()
