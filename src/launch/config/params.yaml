@@ -1,7 +1,7 @@
 # ============== MISSION ==============
 mission_node:
   ros__parameters:
-    mission_depth_m: 0.5           # Competition pool depth target
+    mission_depth_m: 0.7           # Competition pool depth target
     mission_timeout_sec: 900.0     # 15 minute mission window
     tick_rate: 20.0                # Behavior tree tick rate (Hz) — matches pidtest's 20 Hz control loop
     chosen_role: 'survey_repair'   # Pre-race coin-flip choice: survey_repair | search_rescue
@@ -29,9 +29,9 @@ mission_node:
     # this same vehicle to a target heading with no concurrent surge, so they use
     # one tuned gain set. yaw_controller_node (a separate node/process) has its
     # own identical-by-default yaw_kp/ki/kd/yaw_output_limit — keep both in sync.
-    heading_turn_kp: 0.2
+    heading_turn_kp: 0.18
     heading_turn_ki: 0.012
-    heading_turn_kd: 0.005
+    heading_turn_kd: 0.0
     heading_turn_output_limit: 0.6
 
     # ---- Gate approach / pass-through (closed-loop ZED/PID forward legs) ----
@@ -45,7 +45,7 @@ mission_node:
     gate_align_search_side: 'right'
     gate_align_search_speed: 0.15
     gate_align_strafe_max: 0.15
-    gate_style_spin_enabled: false     # do the 2x 360° style spin after the gate
+    gate_style_spin_enabled: true     # do the 2x 360° style spin after the gate
     # Fixed deadlines (NOT scaled by any mission budget). If ConfirmRole never
     # sees the role symbol, or AlignGate never centers on it, within these,
     # each gives up best-effort and the gate task proceeds anyway.
