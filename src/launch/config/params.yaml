@@ -119,6 +119,35 @@ mission_node:
     yaw_hold_limit: 0.6        # pidtest's companion is unclamped (±1) — lower only if a glitch ever spins the sub
     yaw_hold_sign: 1.0
 
+    # ---- Lateral hold (every straight leg) ----
+    # The sway-axis twin of the heading hold above: holds the LINE the leg
+    # started on, so the pool's waves can't gradually push the sub sideways off
+    # course. Without it a straight leg commands zero sway and nothing notices
+    # the drift — it just gets baked into every dead-reckoned distance after it.
+    # Only the cross-track error is corrected; forward progress is untouched.
+    # REQUIRES movement_mode 'zed' — with 'dead_reckon' (or ZED odometry down)
+    # it disables itself, since holding a line needs a position you believe.
+    # ALL live-tunable without restart:
+    #   ros2 param set /mission_node sway_hold_kp 0.15
+    # Tuning, in order:
+    #  1. sway_hold_sign: if the sub runs AWAY from its line / veers harder the
+    #     longer the leg, flip this to -1.0 LIVE. Check this FIRST — a wrong
+    #     sign looks like instability, and no gain change will fix it.
+    #  2. sway_hold_kp: too high = the sub wags/oscillates side to side down the
+    #     leg; too low = it still drifts. Raise kd to damp a wag before dropping kp.
+    #  3. sway_hold_deadband_m: raise it if the lateral thrusters chatter while
+    #     the sub is basically on line (ZED noise); lower for a tighter hold.
+    # sway_hold_limit is a trim authority cap, deliberately well under
+    # transit_thrust — this should nudge the sub back, never fight the surge.
+    # Quick isolation test: sway_hold_enabled false restores the old
+    # zero-sway behavior, so you can A/B whether the hold is helping.
+    sway_hold_enabled: true
+    sway_hold_kp: 0.5          # <<< TUNE IN POOL
+    sway_hold_kd: 0.15         # <<< TUNE IN POOL
+    sway_hold_limit: 0.2       # max lateral trim authority
+    sway_hold_sign: 1.0        # flip to -1.0 if the correction pushes the wrong way
+    sway_hold_deadband_m: 0.1  # ignore cross-track error under this (m)
+
     # ---- Movement mode: ZED odometry vs open-loop dead reckoning ----
     # 'zed'        = measure travel with ZED odometry (accurate, closed-loop).
     # 'dead_reckon'= open-loop timed drive (distance / dead_reckon_mps) — use if

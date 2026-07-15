@@ -15,7 +15,8 @@ this file, breaking `create_slalom_subtree`'s import into mission_node.)
 import py_trees
 from .common import (WaitForDuration, LogBehavior, StopMotion,
                      SearchForDetection, DeadReckonTransit,
-                     distribute_timeout, lock_heading, yaw_hold)
+                     distribute_timeout, lock_heading, yaw_hold,
+                     lock_track, sway_hold)
 from . import blackboard_keys as bb
 
 
@@ -50,10 +51,13 @@ class SlalomPipe(py_trees.behaviour.Behaviour):
         self.phase_start = None
         self.strafe_duration = 0.0
         self._locked_heading = None
+        self._locked_track = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.DETECTIONS, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.GATE_DIVIDER_SIDE, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.CURRENT_POSE, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.USE_ODOMETRY, access=py_trees.common.Access.READ)
 
     def _divider_side(self):
         """Which gate half we passed through ('right'/'left'), default 'right'."""
@@ -64,19 +68,24 @@ class SlalomPipe(py_trees.behaviour.Behaviour):
         return side if side in ('right', 'left') else 'right'
 
     def initialise(self):
-        import time
-        self.phase = 'approach'
-        self.phase_start = time.time()
         self.strafe_duration = 0.0
         # Lock the FOG heading so we hold it while strafing past the pipes — the
         # whole strategy is "strafe, don't turn", which only holds if we actively
         # suppress yaw drift.
         self._locked_heading = lock_heading(self.blackboard.get(bb.ROS_NODE))
+        self._enter_phase('approach')   # also locks the line this phase holds
 
     def _enter_phase(self, phase):
         import time
         self.phase = phase
         self.phase_start = time.time()
+        # Re-lock the line at the START of each surge phase rather than once per
+        # behavior: the strafe phase deliberately puts us on a NEW line (that is
+        # the whole point of dodging the pipe), so a line locked back at
+        # 'approach' would drag us right back into the pipe during 'pass'.
+        if phase in ('approach', 'pass'):
+            self._locked_track = lock_track(
+                self.blackboard.get(bb.ROS_NODE), self.blackboard)
 
     def update(self):
         import time
@@ -107,6 +116,10 @@ class SlalomPipe(py_trees.behaviour.Behaviour):
             # strafe trigger and surge leave room to react between first sight
             # and the pole.
             cmd.surge = self.approach_surge
+            # Hold the line while closing on the pipe. The strafe/recenter
+            # phases below command sway themselves and must keep sole authority
+            # over that axis — the lateral hold would be fighting the dodge.
+            cmd.sway = sway_hold(node, self.blackboard, self._locked_track)
             if red_pole and 0 < red_pole.depth_m < self.strafe_trigger_m:
                 node.get_logger().info(
                     f'Pipe {self.pipe_number} at {red_pole.depth_m:.1f}m — strafing')
@@ -150,8 +163,10 @@ class SlalomPipe(py_trees.behaviour.Behaviour):
             return py_trees.common.Status.RUNNING
 
         elif self.phase == 'pass':
-            # Surge past the pipe for a fixed time.
+            # Surge past the pipe for a fixed time, holding the post-strafe line
+            # (re-locked on entry) so waves can't push us back into the pipe.
             cmd.surge = 0.4
+            cmd.sway = sway_hold(node, self.blackboard, self._locked_track)
             node.cmd_pub.publish(cmd)
             if phase_elapsed > self.pass_duration:
                 self._enter_phase('recenter')

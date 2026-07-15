@@ -107,6 +107,108 @@ def read_use_odometry(blackboard, default=True):
     return default if v is None else bool(v)
 
 
+def lock_track(node, blackboard):
+    """Snapshot the world TRACK LINE to hold laterally: the ZED position and
+    heading right now. Returns (x0, y0, yaw0) or None if it can't be held.
+
+    This is the sway-axis twin of lock_heading(): call it in initialise() and
+    stash the result, then feed it to sway_hold() every tick. Where lock_heading
+    remembers "which way we were pointing", this remembers "which LINE we were
+    driving down" — the line through (x0, y0) along yaw0.
+
+    Returns None (→ sway_hold is a no-op) when there is no trustworthy position:
+    in dead_reckon movement mode we have deliberately chosen not to believe ZED
+    odometry, and holding a line against a drifting position estimate would walk
+    the sub sideways across the pool rather than keep it straight.
+
+    yaw0 comes from the ZED pose, NOT the IMU — the line and the position it is
+    compared against must live in one frame (see pose_yaw()).
+    """
+    if not read_use_odometry(blackboard):
+        return None
+    try:
+        pose = blackboard.get(bb.CURRENT_POSE)
+    except KeyError:
+        pose = None
+    yaw = pose_yaw(pose)
+    if pose is None or yaw is None:
+        return None
+    p = pose.pose.pose.position
+    return (p.x, p.y, yaw)
+
+
+def sway_hold(node, blackboard, locked_track, kp=None, kd=None, limit=None):
+    """PD sway command that drives the vehicle back onto `locked_track`.
+
+    The sway-axis twin of yaw_hold(), and it exists for the same reason: pool
+    waves push the sub sideways off its line over a long open-water leg, and
+    nothing else corrects it — a surge leg commands zero sway, so the drift is
+    integrated straight into every downstream dead-reckoned distance. Same PD
+    shape, same live-tunable params, same degrade-to-zero-on-bad-data rule.
+
+    Only the CROSS-TRACK component of the error is used: the error is projected
+    onto the axis perpendicular to the LOCKED heading yaw0, so distance traveled
+    ALONG the line produces no sway command and the leg's own surge controller
+    keeps sole ownership of the forward axis. Projecting with the current
+    heading instead would bleed along-track distance into the sway command as
+    soon as yaw drifted a few degrees (3 m down a leg at 10° off = half a metre
+    of phantom cross-track), and the sub would chase a drift that isn't there.
+
+    Sign convention matches DeadReckonTransit's lateral legs: the error is
+    measured TOWARD the line on the body-lateral axis (e_sway = -dx*sin + dy*cos),
+    and a positive command drives that way — so sway_hold_sign defaults to +1.0.
+    Flip it live if the sub runs AWAY from the line in the pool.
+
+    Gains/clamp/deadband default to the node's `sway_hold_kp` / `sway_hold_kd` /
+    `sway_hold_limit` / `sway_hold_sign` / `sway_hold_deadband_m` params, all
+    live-tunable in-water (`ros2 param set /mission_node sway_hold_kp 0.15`).
+    Set sway_hold_enabled false to disable the whole thing mid-run.
+    """
+    if locked_track is None:
+        return 0.0
+    if not bool(getattr(node, 'sway_hold_enabled', True)):
+        return 0.0
+    try:
+        pose = blackboard.get(bb.CURRENT_POSE)
+    except KeyError:
+        pose = None
+    if pose is None:
+        return 0.0
+
+    if kp is None:
+        kp = float(getattr(node, 'sway_hold_kp', 0.5))
+    if kd is None:
+        kd = float(getattr(node, 'sway_hold_kd', 0.15))
+    if limit is None:
+        limit = float(getattr(node, 'sway_hold_limit', 0.2))
+    sign = float(getattr(node, 'sway_hold_sign', 1.0))
+    deadband = float(getattr(node, 'sway_hold_deadband_m', 0.1))
+
+    x0, y0, yaw0 = locked_track
+    p = pose.pose.pose.position
+    # Signed error toward the line, on the axis perpendicular to yaw0.
+    err = -(x0 - p.x) * math.sin(yaw0) + (y0 - p.y) * math.cos(yaw0)
+
+    now = pytime.time()
+    d = 0.0
+    state = getattr(node, '_sway_hold_state', None)
+    if state is not None:
+        prev_err, prev_t = state
+        dt = now - prev_t
+        if 0.0 < dt < 0.5:   # >0.5s gap = behavior handoff; stale D would spike
+            d = (err - prev_err) / dt
+    node._sway_hold_state = (err, now)
+
+    # Deadband AFTER the D state update: ZED odometry noise and the sub's own
+    # bobbing are centimetre-scale, and correcting them just burns lateral
+    # thrusters and adds wake. Waves move us a lot further than that.
+    if abs(err) < deadband:
+        return 0.0
+
+    out = sign * (kp * err + kd * d)
+    return max(-limit, min(limit, out))
+
+
 def read_dead_reckon_mps(blackboard, default=0.4):
     """Calibrated forward speed (m/s) used to convert distance→time in dead-reckon
     mode. From the blackboard, else `default`."""
@@ -228,6 +330,7 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
         self.leg_mag = 0.0
         self.effective_timeout = timeout
         self._locked_heading = None
+        self._locked_track = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.CURRENT_POSE, access=py_trees.common.Access.READ)
         self.blackboard.register_key(key=bb.CURRENT_HEADING, access=py_trees.common.Access.READ)
@@ -248,6 +351,10 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
         self.effective_timeout = self.timeout
         node = self.blackboard.get(bb.ROS_NODE)
         self._locked_heading = lock_heading(node)
+        # The line this leg drives down — held on the sway axis exactly like the
+        # heading is held on the yaw axis (see sway_hold). Only pure-forward legs
+        # use it; a lateral leg's own sway PID already owns that axis.
+        self._locked_track = lock_track(node, self.blackboard)
         # Fresh position PIDs each leg (output clamped to the speed cap) — the
         # same PIDController + clamp arrangement as pidtest's main axis.
         self.surge_pid = PIDController(self.kp, self.ki, self.kd,
@@ -400,9 +507,15 @@ class DeadReckonTransit(py_trees.behaviour.Behaviour):
         cmd = ThrusterCommand()
         cmd.header.stamp = node.get_clock().now().to_msg()
         cmd.surge = self.surge_pid.compute(e_surge, dt)
-        # pidtest never commands sway on a surge run — neither do we on a
-        # pure-forward leg. Lateral legs PID the sway axis the same way.
-        cmd.sway = 0.0 if self.pure_forward else self.sway_pid.compute(e_sway, dt)
+        # pidtest never commands sway on a surge run, and neither did we — but
+        # pidtest ran a short step in still water, while a competition leg is
+        # long enough for pool waves to push the sub metres off its line, and a
+        # pure-forward leg has nothing else watching the sway axis. So hold the
+        # line with the gentle, deadbanded sway_hold PD (NOT the surge-strength
+        # position PID) — same treatment the yaw axis already gets. Lateral legs
+        # are unchanged: their own sway PID already owns that axis.
+        cmd.sway = (sway_hold(node, self.blackboard, self._locked_track)
+                    if self.pure_forward else self.sway_pid.compute(e_sway, dt))
         # pidtest's companion stabilizer, verbatim:
         #   yaw_error = ref_yaw - imu_heading; cmd.yaw = sign * pid(yaw_error)
         imu_now = getattr(node, 'current_heading', None)

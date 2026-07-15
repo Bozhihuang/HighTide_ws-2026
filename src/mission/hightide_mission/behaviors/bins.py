@@ -11,6 +11,7 @@ import py_trees
 from .common import (WaitForDetection, WaitForAnyDetection, WaitForDuration,
                      LogBehavior, StopMotion, PublishDepthSetpoint,
                      SearchForDetection, lock_heading, yaw_hold,
+                     lock_track, sway_hold,
                      distribute_timeout, estimate_travel,
                      read_use_odometry, read_dead_reckon_mps)
 from . import blackboard_keys as bb
@@ -108,6 +109,10 @@ class NavigateOverBin(py_trees.behaviour.Behaviour):
         self.use_odom = read_use_odometry(self.blackboard)
         self.dr_mps = read_dead_reckon_mps(self.blackboard)
         self._locked_heading = lock_heading(self.blackboard.get(bb.ROS_NODE))
+        # The bin goes under the camera partway through this advance, so there's
+        # no visual feedback left to correct a sideways push — hold the line.
+        self._locked_track = lock_track(self.blackboard.get(bb.ROS_NODE),
+                                        self.blackboard)
 
         # Distance to cover = HORIZONTAL component of the last-seen ZED range.
         # The camera looks forward and the bin is on the floor below, so the
@@ -169,6 +174,7 @@ class NavigateOverBin(py_trees.behaviour.Behaviour):
         cmd.header.stamp = node.get_clock().now().to_msg()
         cmd.surge = self.surge
         cmd.yaw = yaw_hold(node, self._locked_heading)  # advance straight over the bin
+        cmd.sway = sway_hold(node, self.blackboard, self._locked_track)
         node.cmd_pub.publish(cmd)
         return py_trees.common.Status.RUNNING
 

@@ -11,7 +11,8 @@ was on, surge through, then a heading-safe 2x 360° yaw spin for style points.
 
 import py_trees
 from .common import (CallTriggerService, LogBehavior, StopMotion, RecordPose,
-                     DeadReckonTransit, lock_heading, yaw_hold)
+                     DeadReckonTransit, lock_heading, yaw_hold,
+                     lock_track, sway_hold)
 from . import blackboard_keys as bb
 
 
@@ -198,13 +199,21 @@ class SurgeThrough(py_trees.behaviour.Behaviour):
         self.speed = speed
         self.start_time = None
         self._locked_heading = None
+        self._locked_track = None
         self.blackboard = self.attach_blackboard_client()
         self.blackboard.register_key(key=bb.ROS_NODE, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.CURRENT_POSE, access=py_trees.common.Access.READ)
+        self.blackboard.register_key(key=bb.USE_ODOMETRY, access=py_trees.common.Access.READ)
 
     def initialise(self):
         import time
+        node = self.blackboard.get(bb.ROS_NODE)
         self.start_time = time.time()
-        self._locked_heading = lock_heading(self.blackboard.get(bb.ROS_NODE))
+        self._locked_heading = lock_heading(node)
+        # Lock the line we're centered on: AlignGate just strafed us onto the
+        # correct half of the gate, and drifting off it mid-pass is how you
+        # clip a pole.
+        self._locked_track = lock_track(node, self.blackboard)
 
     def update(self):
         import time
@@ -217,7 +226,8 @@ class SurgeThrough(py_trees.behaviour.Behaviour):
         cmd = ThrusterCommand()
         cmd.header.stamp = node.get_clock().now().to_msg()
         cmd.surge = self.speed
-        cmd.yaw = yaw_hold(node, self._locked_heading)  # drive straight, hold heading
+        cmd.yaw = yaw_hold(node, self._locked_heading)   # drive straight, hold heading
+        cmd.sway = sway_hold(node, self.blackboard, self._locked_track)  # ...and hold the line
         node.cmd_pub.publish(cmd)
         return py_trees.common.Status.RUNNING
 

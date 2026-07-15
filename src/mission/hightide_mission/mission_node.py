@@ -193,6 +193,21 @@ class MissionNode(Node):
         self.declare_parameter('yaw_hold_limit', 0.25)
         self.declare_parameter('yaw_hold_sign', -1.0)
 
+        # Lateral (cross-track) hold — the sway-axis twin of the heading hold
+        # above, read the same way by common.sway_hold(). Pool waves push the
+        # sub sideways off a long straight leg and NOTHING else corrects it
+        # (a surge leg commands zero sway), so the drift gets baked into every
+        # dead-reckoned distance downstream. Needs ZED odometry: in
+        # movement_mode 'dead_reckon' it disables itself automatically.
+        # Deliberately gentler than the transit position PID — this is a trim,
+        # not a move. Deadband keeps it from chattering on odometry noise.
+        self.declare_parameter('sway_hold_enabled', True)
+        self.declare_parameter('sway_hold_kp', 0.5)
+        self.declare_parameter('sway_hold_kd', 0.15)
+        self.declare_parameter('sway_hold_limit', 0.2)
+        self.declare_parameter('sway_hold_sign', 1.0)
+        self.declare_parameter('sway_hold_deadband_m', 0.1)
+
         self.declare_parameter('movement_mode', 'zed')             # 'zed' or 'dead_reckon'
         # transit_thrust = the POWER (normalized -1..1 cmd) the transit legs drive
         # at, in BOTH modes. dead_reckon_mps = the actual speed the vehicle moves
@@ -294,6 +309,12 @@ class MissionNode(Node):
         self.yaw_hold_kd = float(self.get_parameter('yaw_hold_kd').value)
         self.yaw_hold_limit = float(self.get_parameter('yaw_hold_limit').value)
         self.yaw_hold_sign = float(self.get_parameter('yaw_hold_sign').value)
+        self.sway_hold_enabled = bool(self.get_parameter('sway_hold_enabled').value)
+        self.sway_hold_kp = float(self.get_parameter('sway_hold_kp').value)
+        self.sway_hold_kd = float(self.get_parameter('sway_hold_kd').value)
+        self.sway_hold_limit = float(self.get_parameter('sway_hold_limit').value)
+        self.sway_hold_sign = float(self.get_parameter('sway_hold_sign').value)
+        self.sway_hold_deadband_m = float(self.get_parameter('sway_hold_deadband_m').value)
         self.add_on_set_parameters_callback(self._on_set_parameters)
 
         # Movement mode → blackboard flag the nav behaviors read.
@@ -450,9 +471,14 @@ class MissionNode(Node):
         from rcl_interfaces.msg import SetParametersResult
         for p in params:
             if p.name in ('yaw_hold_kp', 'yaw_hold_kd',
-                          'yaw_hold_limit', 'yaw_hold_sign'):
+                          'yaw_hold_limit', 'yaw_hold_sign',
+                          'sway_hold_kp', 'sway_hold_kd', 'sway_hold_limit',
+                          'sway_hold_sign', 'sway_hold_deadband_m'):
                 setattr(self, p.name, float(p.value))
                 self.get_logger().info(f'{p.name} -> {float(p.value)}')
+            elif p.name == 'sway_hold_enabled':
+                self.sway_hold_enabled = bool(p.value)
+                self.get_logger().info(f'{p.name} -> {bool(p.value)}')
         return SetParametersResult(successful=True)
 
     def _build_tree(self) -> py_trees.trees.BehaviourTree:
